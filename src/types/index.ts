@@ -32,15 +32,15 @@ export interface LoginRequest {
 export interface LoginResponse {
   token: string
   refreshToken: string
-  expiresIn: number      // seconds until access token expires
+  expiresIn: number
   user: UserDto
 }
 
 // ─── Farm ────────────────────────────────────────────────────────────────────
 
 export type SubscriptionStatus = 'PENDING_ACTIVATION' | 'ACTIVE' | 'SUSPENDED' | 'CANCELLED' | 'DELETED'
-export type SubscriptionTier = 'BASIC' | 'STANDARD' | 'PREMIUM'
-export type FarmStructureType = 'GREENHOUSE' | 'FIELD' | 'OTHER'
+export type SubscriptionTier   = 'BASIC' | 'STANDARD' | 'PREMIUM'
+export type FarmStructureType  = 'GREENHOUSE' | 'FIELD' | 'OTHER'
 
 export interface FarmResponse {
   id: string
@@ -57,6 +57,10 @@ export interface FarmResponse {
   contactPhone?: string
   timezone?: string
   ownerId?: string
+  structureType?: FarmStructureType     // drives which structure UI to show
+  defaultBayCount?: number
+  defaultBenchesPerBay?: number
+  defaultSpotChecksPerBench?: number
   subscriptionTier: SubscriptionTier
   subscriptionStatus: SubscriptionStatus
   licensedAreaHectares?: number
@@ -71,7 +75,7 @@ export interface FarmResponse {
   updatedAt: string
 }
 
-// ─── Scouting ─────────────────────────────────────────────────────────────────
+// ─── Scouting ────────────────────────────────────────────────────────────────
 
 export type SessionStatus =
   | 'DRAFT' | 'NEW' | 'IN_PROGRESS' | 'SUBMITTED'
@@ -146,7 +150,7 @@ export interface ScoutingSessionDetailDto {
   recommendations: RecommendationEntryDto[]
 }
 
-// ─── Analytics ────────────────────────────────────────────────────────────────
+// ─── Analytics ───────────────────────────────────────────────────────────────
 
 export type SeverityLevel = 'ZERO' | 'LOW' | 'MODERATE' | 'HIGH' | 'VERY_HIGH' | 'EMERGENCY'
 
@@ -289,7 +293,7 @@ export interface CreateUserRequest {
   phoneNumber?: string
   country?: string
   role: Role
-  farmId?: string        // not allowed for SUPER_ADMIN
+  farmId?: string
 }
 
 export interface UpdateUserRequest {
@@ -320,19 +324,10 @@ export interface PagedResponse<T> {
 }
 
 export type SubscriptionStatusUpdate = SubscriptionStatus
-export type SubscriptionTierUpdate = SubscriptionTier
+export type SubscriptionTierUpdate   = SubscriptionTier
 
-export interface UpdateFarmLicenseRequest {
-  subscriptionStatus?: SubscriptionStatusUpdate
-  subscriptionTier?: SubscriptionTierUpdate
-  licensedAreaHectares?: number
-  licensedUnitQuota?: number
-  licenseExpiryDate?: string
-  licenseStartDate?: string
-  autoRenewEnabled?: boolean
-  billingEmail?: string
-  quotaDiscountPercentage?: number
-}
+// UpdateFarmLicenseRequest — all license fields go through the same PUT /api/farms/{id}
+export type UpdateFarmLicenseRequest = UpdateFarmRequest
 
 export interface UpdateFarmRequest {
   name?: string
@@ -346,7 +341,26 @@ export interface UpdateFarmRequest {
   contactEmail?: string
   contactPhone?: string
   timezone?: string
-  ownerId?: string   // can be updated after initial creation with null-UUID placeholder
+  ownerId?: string
+  scoutId?: string
+  defaultBayCount?: number
+  defaultBenchesPerBay?: number
+  defaultSpotChecksPerBench?: number
+  // Super admin license/archive fields
+  subscriptionStatus?: SubscriptionStatus
+  subscriptionTier?: SubscriptionTier
+  licensedAreaHectares?: number
+  licensedUnitQuota?: number
+  licenseExpiryDate?: string
+  licenseGracePeriodEnd?: string
+  licenseArchivedDate?: string
+  autoRenewEnabled?: boolean
+  billingEmail?: string
+  quotaDiscountPercentage?: number
+  isArchived?: boolean
+  latitude?: number
+  longitude?: number
+  accessLocked?: boolean   // real field in backend UpdateFarmRequest
 }
 
 export interface CacheStats {
@@ -362,13 +376,14 @@ export interface CacheInfo {
   totalKeys: number
 }
 
-// ─── Super Admin — Farm creation / structures ────────────────────────────────
+// ─── Farm creation / structures ──────────────────────────────────────────────
 
 export interface CreateFarmRequest {
   name: string
-  ownerId: string                        // required — UUID of the owning user
-  subscriptionStatus: SubscriptionStatus // required
-  licensedAreaHectares: number           // required
+  ownerId: string
+  subscriptionStatus: SubscriptionStatus
+  licensedAreaHectares: number
+  structureType: FarmStructureType      // required — drives structure UI
   subscriptionTier?: SubscriptionTier
   description?: string
   address?: string
@@ -380,16 +395,24 @@ export interface CreateFarmRequest {
   contactEmail?: string
   contactPhone?: string
   timezone?: string
+  defaultBayCount?: number
+  defaultBenchesPerBay?: number
+  defaultSpotChecksPerBench?: number
+  fieldBlocks?: unknown[]
+  greenhouses?: unknown[]
 }
 
+// Greenhouses (GREENHOUSE farms)
 export interface GreenhouseResponse {
   id: string
   farmId: string
   name: string
   description?: string
   structureType: FarmStructureType
-  bayCount: number
-  benchesPerBay: number
+  bayCount?: number
+  benchesPerBay?: number
+  spotChecksPerBench?: number
+  active: boolean
   createdAt: string
   updatedAt: string
 }
@@ -398,9 +421,52 @@ export interface CreateGreenhouseRequest {
   farmId: string
   name: string
   description?: string
-  structureType?: FarmStructureType
+  bayCount?: number | null
+  benchesPerBay?: number | null
+  spotChecksPerBench?: number | null
+  active?: boolean
+}
+
+export interface UpdateGreenhouseRequest {
+  name?: string
+  description?: string
+  bayCount?: number | null
+  benchesPerBay?: number | null
+  spotChecksPerBench?: number | null
+  active?: boolean
+}
+
+// Field blocks (FIELD farms)
+export interface FieldBlockResponse {
+  id: string
+  farmId: string
+  name: string
+  description?: string
   bayCount?: number
-  benchesPerBay?: number
+  spotChecksPerBay?: number
+  bayTags?: string[]
+  active: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreateFieldBlockRequest {
+  farmId: string
+  name: string
+  description?: string
+  bayCount?: number | null
+  spotChecksPerBay?: number | null
+  bayTags?: string[]
+  active?: boolean
+}
+
+export interface UpdateFieldBlockRequest {
+  name?: string
+  description?: string
+  bayCount?: number | null
+  spotChecksPerBay?: number | null
+  bayTags?: string[]
+  active?: boolean
 }
 
 export interface BayResponse {

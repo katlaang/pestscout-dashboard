@@ -3,7 +3,7 @@ import { Toaster } from 'react-hot-toast'
 import AppLayout from '@/components/layout/AppLayout'
 import ProtectedRoute from '@/components/layout/ProtectedRoute'
 import LoginPage from '@/pages/LoginPage'
-import ResetPasswordPage from '@/pages/ResetPasswordPage'
+import ResetPasswordPage from '@/pages/resetpasswordpage'
 import DashboardPage from '@/pages/DashboardPage'
 import FarmsPage from '@/pages/FarmsPage'
 import SessionsPage from '@/pages/SessionsPage'
@@ -13,7 +13,7 @@ import HeatmapPage from '@/pages/HeatmapPage'
 import AlertsPage from '@/pages/AlertsPage'
 import SettingsPage from '@/pages/SettingsPage'
 import SuperAdminPage from '@/pages/SuperAdminPage'
-import { useIdleTimer } from '@/hooks/useIdleTimer'
+import { useIdleTimer } from '@/hooks/useidletimer'
 
 // Wraps protected routes and activates the idle timer
 function AuthenticatedApp() {

@@ -2,8 +2,10 @@ import { useState, useEffect, useCallback } from 'react'
 import { useAuthStore } from '@/hooks/useAuth'
 import { adminFarmsApi, adminUsersApi, adminCacheApi } from '@/services/api'
 import type {
-  FarmResponse, GreenhouseResponse, UserDto, FarmMemberResponse,
-  UpdateFarmLicenseRequest, CreateFarmRequest, CreateGreenhouseRequest,
+  FarmResponse, GreenhouseResponse, FieldBlockResponse, FarmStructureType,
+  UserDto, FarmMemberResponse,
+  UpdateFarmLicenseRequest, UpdateFarmRequest,
+  CreateFarmRequest,
   CacheInfo,
 } from '@/types'
 import { formatDate } from '@/utils'
@@ -78,14 +80,20 @@ function FarmsTab() {
   const [loading, setLoading] = useState(true)
   const [selectedFarm, setSelectedFarm] = useState<FarmResponse | null>(null)
   const [showCreateFarm, setShowCreateFarm] = useState(false)
-  const [greenhouses, setGreenhouses] = useState<GreenhouseResponse[]>([])
-  const [ghLoading, setGhLoading] = useState(false)
-  const [showCreateGh, setShowCreateGh] = useState(false)
-  const [licensePanel, setLicensePanel] = useState(false)
+  const [showEditFarm, setShowEditFarm] = useState(false)
+  const [structures, setStructures] = useState<(GreenhouseResponse | FieldBlockResponse)[]>([])
+  const [structLoading, setStructLoading] = useState(false)
+  const [editingStructure, setEditingStructure] = useState<GreenhouseResponse | FieldBlockResponse | null>(null)
+  const [showCreateStruct, setShowCreateStruct] = useState(false)
   const [members, setMembers] = useState<FarmMemberResponse[]>([])
   const [membersLoading, setMembersLoading] = useState(false)
+  const [licensePanel, setLicensePanel] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  // Track accessLocked locally — backend mapToResponse doesn't include this field
+  const [lockedMap, setLockedMap] = useState<Record<string, boolean>>({})
+
+  const isLocked = (farm: FarmResponse) => lockedMap[farm.id] ?? farm.accessLocked ?? false
 
   function flash(msg: string, isError = false) {
     if (isError) { setError(msg); setTimeout(() => setError(null), 4000) }
@@ -96,24 +104,29 @@ function FarmsTab() {
     setLoading(true)
     adminFarmsApi.listAll()
       .then(data => {
-        // Handle both plain array and paged response { content: [...] }
-        const farms = Array.isArray(data) ? data : (data as any).content ?? []
-        setFarms(farms)
+        const list = Array.isArray(data) ? data : (data as any).content ?? []
+        setFarms(list)
       })
-      .catch(e => {
-        flash(`Could not load farms: ${e?.response?.data?.message ?? e?.message ?? 'Unknown error'}`, true)
-      })
+      .catch(e => flash(`Could not load farms: ${e?.response?.data?.message ?? e?.message ?? 'Unknown error'}`, true))
       .finally(() => setLoading(false))
   }, [])
 
   useEffect(() => { loadFarms() }, [loadFarms])
 
+  // Load structures + members when farm changes
   useEffect(() => {
     if (!selectedFarm) return
-    setGhLoading(true)
-    adminFarmsApi.listGreenhouses(selectedFarm.id)
-      .then(setGreenhouses)
-      .finally(() => setGhLoading(false))
+    setStructLoading(true)
+    const structFetch = selectedFarm.structureType === 'FIELD'
+      ? adminFarmsApi.listFieldBlocks(selectedFarm.id)
+      : selectedFarm.structureType === 'GREENHOUSE'
+        ? adminFarmsApi.listGreenhouses(selectedFarm.id)
+        : Promise.resolve([])
+    structFetch
+      .then(setStructures)
+      .catch(() => setStructures([]))
+      .finally(() => setStructLoading(false))
+
     setMembersLoading(true)
     adminFarmsApi.listMembers(selectedFarm.id)
       .then(setMembers)
@@ -122,23 +135,44 @@ function FarmsTab() {
   }, [selectedFarm])
 
   async function handleLockToggle(farm: FarmResponse) {
+    const newLocked = !isLocked(farm)
+    // Update UI immediately — don't wait for backend round-trip
+    setLockedMap(prev => ({ ...prev, [farm.id]: newLocked }))
     try {
-      const updated = await adminFarmsApi.setAccessLocked(farm.id, !farm.accessLocked)
-      setFarms(prev => prev.map(f => f.id === farm.id ? updated : f))
-      if (selectedFarm?.id === farm.id) setSelectedFarm(updated)
-      flash(`Farm ${updated.accessLocked ? 'locked' : 'unlocked'}`)
-    } catch { flash('Failed to update farm access', true) }
+      await adminFarmsApi.setAccessLocked(farm.id, newLocked, farm)
+      flash(`Farm access ${newLocked ? 'locked' : 'unlocked'}`)
+    } catch (e: any) {
+      // Revert on failure
+      setLockedMap(prev => ({ ...prev, [farm.id]: !newLocked }))
+      flash(e?.response?.data?.message ?? 'Failed to update farm access', true)
+    }
   }
 
-  async function handleDeleteGh(gh: GreenhouseResponse) {
-    if (!selectedFarm) return
-    if (!confirm(`Delete "${gh.name}"? This cannot be undone.`)) return
+  async function handleDeleteFarm(farm: FarmResponse) {
+    if (!confirm(`Archive "${farm.name}"? The farm will be hidden from all users. This can be reversed via the License panel.`)) return
     try {
-      await adminFarmsApi.deleteGreenhouse(selectedFarm.id, gh.id)
-      setGreenhouses(prev => prev.filter(g => g.id !== gh.id))
-      flash('Structure deleted')
-    } catch { flash('Delete failed', true) }
+      await adminFarmsApi.delete(farm.id, farm)
+      setFarms(prev => prev.filter(f => f.id !== farm.id))
+      if (selectedFarm?.id === farm.id) setSelectedFarm(null)
+      flash(`Farm "${farm.name}" archived`)
+    } catch (e: any) { flash(e?.response?.data?.message ?? 'Archive failed', true) }
   }
+
+  async function handleDeleteStruct(s: GreenhouseResponse | FieldBlockResponse) {
+    if (!selectedFarm) return
+    if (!confirm(`Delete "${s.name}"? This cannot be undone.`)) return
+    try {
+      if (selectedFarm.structureType === 'FIELD') {
+        await adminFarmsApi.deleteFieldBlock(selectedFarm.id, s.id)
+      } else {
+        await adminFarmsApi.deleteGreenhouse(selectedFarm.id, s.id)
+      }
+      setStructures(prev => prev.filter(x => x.id !== s.id))
+      flash('Structure deleted')
+    } catch (e: any) { flash(e?.response?.data?.message ?? 'Delete failed', true) }
+  }
+
+  const structLabel = selectedFarm?.structureType === 'FIELD' ? 'Field block' : 'Greenhouse'
 
   return (
     <div>
@@ -160,7 +194,7 @@ function FarmsTab() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {farms.map(farm => (
                 <button key={farm.id}
-                  onClick={() => { setSelectedFarm(farm); setLicensePanel(false); setShowCreateGh(false) }}
+                  onClick={() => { setSelectedFarm(farm); setLicensePanel(false); setShowCreateStruct(false); setEditingStructure(null); setShowEditFarm(false) }}
                   style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     padding: '9px 12px', borderRadius: 8, border: '0.5px solid',
@@ -171,16 +205,18 @@ function FarmsTab() {
                   }}>
                   <div>
                     <p style={{ fontSize: 12, fontWeight: 500, color: '#111827', marginBottom: 1 }}>{farm.name}</p>
-                    <p style={{ fontSize: 10, color: '#9ca3af', fontFamily: 'DM Mono, monospace' }}>{farm.farmTag}</p>
+                    <p style={{ fontSize: 10, color: '#9ca3af' }}>
+                      {farm.farmTag} · {farm.structureType ?? 'No type'}
+                    </p>
                   </div>
-                  <StatusDot status={farm.subscriptionStatus} locked={farm.accessLocked} />
+                  <StatusDot status={farm.subscriptionStatus ?? ''} locked={isLocked(farm)} />
                 </button>
               ))}
             </div>
           )}
         </div>
 
-        {/* Right: detail */}
+        {/* Right: farm detail */}
         <div>
           {!selectedFarm ? (
             <div className="card" style={{ padding: 48, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
@@ -189,40 +225,69 @@ function FarmsTab() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-              {/* Farm header card */}
+              {/* Farm header */}
               <div className="card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
                   <div>
                     <h2 style={{ fontSize: 16, color: '#111827', marginBottom: 2 }}>{selectedFarm.name}</h2>
                     <p style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'DM Mono, monospace' }}>{selectedFarm.id}</p>
                   </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+                    <button className="btn-secondary" style={{ fontSize: 11, padding: '5px 10px' }}
+                      onClick={() => setShowEditFarm(!showEditFarm)}>
+                      {showEditFarm ? 'Cancel edit' : 'Edit'}
+                    </button>
                     <button
                       style={{
-                        padding: '5px 12px', fontSize: 11, borderRadius: 7, cursor: 'pointer',
+                        padding: '5px 10px', fontSize: 11, borderRadius: 7, cursor: 'pointer',
                         fontFamily: 'inherit', fontWeight: 500, border: '0.5px solid',
-                        ...(selectedFarm.accessLocked
-                          ? { background: '#f0faf4', borderColor: '#a7dcbc', color: '#1e5c3a' }
-                          : { background: '#fff5f5', borderColor: '#fca5a5', color: '#c53030' })
+                        ...(isLocked(selectedFarm)
+                          ? { background: '#fff5f5', borderColor: '#fca5a5', color: '#c53030' }
+                          : { background: '#f0faf4', borderColor: '#a7dcbc', color: '#1e5c3a' })
                       }}
                       onClick={() => handleLockToggle(selectedFarm)}>
-                      {selectedFarm.accessLocked ? '🔓 Unlock' : '🔒 Lock'}
+                      {isLocked(selectedFarm) ? '🔒 Locked — click to unlock' : '🔓 Unlocked — click to lock'}
                     </button>
-                    <button className="btn-secondary" style={{ fontSize: 11, padding: '5px 12px' }}
+                    <button className="btn-secondary" style={{ fontSize: 11, padding: '5px 10px' }}
                       onClick={() => setLicensePanel(!licensePanel)}>
                       License
                     </button>
+                    <button
+                      style={{ padding: '5px 10px', fontSize: 11, borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500, border: '0.5px solid #fca5a5', background: '#fff5f5', color: '#c53030' }}
+                      onClick={() => handleDeleteFarm(selectedFarm)}>
+                      Archive farm
+                    </button>
                   </div>
                 </div>
+
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-                  <InfoCell label="Tier" value={selectedFarm.subscriptionTier} />
-                  <InfoCell label="Status" value={selectedFarm.subscriptionStatus.replace('_', ' ')} />
+                  <InfoCell label="Layout" value={selectedFarm.structureType ?? '—'} />
+                  <InfoCell label="Tier" value={selectedFarm.subscriptionTier ?? '—'} />
+                  <InfoCell label="Status" value={selectedFarm.subscriptionStatus?.replace('_', ' ') ?? '—'} />
                   <InfoCell label="Expires" value={selectedFarm.licenseExpiryDate ? formatDate(selectedFarm.licenseExpiryDate) : '—'} />
                   <InfoCell label="Area" value={selectedFarm.licensedAreaHectares ? `${selectedFarm.licensedAreaHectares} ha` : '—'} />
                   <InfoCell label="Location" value={[selectedFarm.city, selectedFarm.country].filter(Boolean).join(', ') || '—'} />
-                  <InfoCell label="Tag" value={selectedFarm.farmTag} mono />
+                  <InfoCell label="Access" value={isLocked(selectedFarm) ? '🔒 Locked' : '🔓 Open'} />
+                  {selectedFarm.defaultBayCount != null && <InfoCell label="Default bays" value={String(selectedFarm.defaultBayCount)} />}
+                  {selectedFarm.defaultBenchesPerBay != null && <InfoCell label="Default benches/bay" value={String(selectedFarm.defaultBenchesPerBay)} />}
+                  {selectedFarm.defaultSpotChecksPerBench != null && <InfoCell label="Default spots/bench" value={String(selectedFarm.defaultSpotChecksPerBench)} />}
                 </div>
               </div>
+
+              {/* Inline edit form */}
+              {showEditFarm && (
+                <EditFarmDetailsForm
+                  farm={selectedFarm}
+                  onSaved={updated => {
+                    setFarms(prev => prev.map(f => f.id === updated.id ? updated : f))
+                    setSelectedFarm(updated)
+                    setShowEditFarm(false)
+                    flash('Farm updated')
+                  }}
+                  onCancel={() => setShowEditFarm(false)}
+                  onError={msg => flash(msg, true)}
+                />
+              )}
 
               {/* License panel */}
               {licensePanel && (
@@ -238,62 +303,108 @@ function FarmsTab() {
                 />
               )}
 
-              {/* Structures */}
-              <div className="card">
-                <div className="card-title">
-                  <span>Structures ({greenhouses.length})</span>
-                  <button className="btn-primary" style={{ fontSize: 11, padding: '4px 10px' }}
-                    onClick={() => setShowCreateGh(true)}>+ Add structure</button>
-                </div>
+              {/* Structures — only for GREENHOUSE or FIELD farms */}
+              {selectedFarm.structureType !== 'OTHER' && (
+                <div className="card">
+                  <div className="card-title">
+                    <span>{structLabel}s ({structures.length})</span>
+                    <button className="btn-primary" style={{ fontSize: 11, padding: '4px 10px' }}
+                      onClick={() => { setShowCreateStruct(true); setEditingStructure(null) }}>
+                      + Add {structLabel.toLowerCase()}
+                    </button>
+                  </div>
 
-                {showCreateGh && (
-                  <CreateGreenhouseForm
-                    farmId={selectedFarm.id}
-                    onCreated={gh => { setGreenhouses(prev => [...prev, gh]); setShowCreateGh(false); flash('Structure created') }}
-                    onCancel={() => setShowCreateGh(false)}
-                    onError={msg => flash(msg, true)}
-                  />
-                )}
+                  {showCreateStruct && (
+                    <StructureForm
+                      farmId={selectedFarm.id}
+                      farmType={selectedFarm.structureType ?? 'GREENHOUSE'}
+                      farm={selectedFarm}
+                      onSaved={s => {
+                        setStructures(prev => [...prev, s])
+                        setShowCreateStruct(false)
+                        flash(`${structLabel} created`)
+                      }}
+                      onCancel={() => setShowCreateStruct(false)}
+                      onError={msg => flash(msg, true)}
+                    />
+                  )}
 
-                {ghLoading ? (
-                  <p style={{ fontSize: 12, color: '#9ca3af', padding: '12px 0' }}>Loading…</p>
-                ) : greenhouses.length === 0 ? (
-                  <p style={{ fontSize: 12, color: '#9ca3af', padding: '12px 0' }}>
-                    No structures yet. Click "+ Add structure" to create a greenhouse or field block.
-                  </p>
-                ) : (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 10 }}>
-                    <thead>
-                      <tr style={{ borderBottom: '0.5px solid #e5e7eb' }}>
-                        {['Name', 'Type', 'Bays', 'Benches/bay', 'Created', ''].map(h => (
-                          <th key={h} style={{ textAlign: 'left', padding: '5px 8px 8px', fontSize: 10, fontWeight: 500, color: '#9ca3af', textTransform: 'uppercase' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {greenhouses.map(gh => (
-                        <tr key={gh.id} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
-                          <td style={{ padding: '8px', fontWeight: 500, color: '#111827' }}>{gh.name}</td>
-                          <td style={{ padding: '8px' }}>
-                            <span className={`badge ${gh.structureType === 'GREENHOUSE' ? 'badge-green' : 'badge-gray'}`}>
-                              {gh.structureType.toLowerCase()}
-                            </span>
-                          </td>
-                          <td style={{ padding: '8px', fontFamily: 'DM Mono, monospace' }}>{gh.bayCount}</td>
-                          <td style={{ padding: '8px', fontFamily: 'DM Mono, monospace' }}>{gh.benchesPerBay}</td>
-                          <td style={{ padding: '8px', color: '#9ca3af' }}>{formatDate(gh.createdAt)}</td>
-                          <td style={{ padding: '8px' }}>
-                            <button onClick={() => handleDeleteGh(gh)}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e05252', fontSize: 11, fontFamily: 'inherit', padding: '2px 6px' }}>
-                              Delete
-                            </button>
-                          </td>
+                  {editingStructure && (
+                    <StructureForm
+                      farmId={selectedFarm.id}
+                      farmType={selectedFarm.structureType ?? 'GREENHOUSE'}
+                      farm={selectedFarm}
+                      existing={editingStructure}
+                      onSaved={updated => {
+                        setStructures(prev => prev.map(s => s.id === updated.id ? updated : s))
+                        setEditingStructure(null)
+                        flash(`${structLabel} updated`)
+                      }}
+                      onCancel={() => setEditingStructure(null)}
+                      onError={msg => flash(msg, true)}
+                    />
+                  )}
+
+                  {structLoading ? (
+                    <p style={{ fontSize: 12, color: '#9ca3af', padding: '12px 0' }}>Loading…</p>
+                  ) : structures.length === 0 ? (
+                    <p style={{ fontSize: 12, color: '#9ca3af', padding: '12px 0' }}>
+                      No {structLabel.toLowerCase()}s yet. Click "+ Add {structLabel.toLowerCase()}" to create one.
+                    </p>
+                  ) : (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 10 }}>
+                      <thead>
+                        <tr style={{ borderBottom: '0.5px solid #e5e7eb' }}>
+                          {['Name', 'Bays', selectedFarm.structureType === 'FIELD' ? 'Spots/bay' : 'Benches/bay', 'Status', ''].map(h => (
+                            <th key={h} style={{ textAlign: 'left', padding: '5px 8px 8px', fontSize: 10, fontWeight: 500, color: '#9ca3af', textTransform: 'uppercase' }}>{h}</th>
+                          ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
+                      </thead>
+                      <tbody>
+                        {structures.map(s => {
+                          const isField = selectedFarm.structureType === 'FIELD'
+                          const fb = s as FieldBlockResponse
+                          const gh = s as GreenhouseResponse
+                          return (
+                            <tr key={s.id} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
+                              <td style={{ padding: '8px', fontWeight: 500, color: '#111827' }}>{s.name}</td>
+                              <td style={{ padding: '8px', fontFamily: 'DM Mono, monospace' }}>
+                                {(isField ? fb.bayCount : gh.bayCount) ?? <span style={{ color: '#9ca3af' }}>default</span>}
+                              </td>
+                              <td style={{ padding: '8px', fontFamily: 'DM Mono, monospace' }}>
+                                {(isField ? fb.spotChecksPerBay : gh.benchesPerBay) ?? <span style={{ color: '#9ca3af' }}>default</span>}
+                              </td>
+                              <td style={{ padding: '8px' }}>
+                                <span className={`badge ${s.active ? 'badge-green' : 'badge-gray'}`}>
+                                  {s.active ? 'Active' : 'Inactive'}
+                                </span>
+                              </td>
+                              <td style={{ padding: '8px', display: 'flex', gap: 8 }}>
+                                <button onClick={() => { setEditingStructure(s); setShowCreateStruct(false) }}
+                                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2d7a50', fontSize: 11, fontFamily: 'inherit', padding: 0 }}>
+                                  Edit
+                                </button>
+                                <button onClick={() => handleDeleteStruct(s)}
+                                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e05252', fontSize: 11, fontFamily: 'inherit', padding: 0 }}>
+                                  Delete
+                                </button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {selectedFarm.structureType === 'OTHER' && (
+                <div className="card" style={{ background: '#f9fafb' }}>
+                  <p style={{ fontSize: 12, color: '#6b7280' }}>
+                    This farm has layout type <strong>Other</strong>. Structures can be added once the layout type is updated via Edit.
+                  </p>
+                </div>
+              )}
 
               {/* Members */}
               <div className="card">
@@ -304,7 +415,7 @@ function FarmsTab() {
                   <p style={{ fontSize: 12, color: '#9ca3af', padding: '8px 0' }}>Loading…</p>
                 ) : members.length === 0 ? (
                   <p style={{ fontSize: 12, color: '#9ca3af', padding: '8px 0' }}>
-                    No members found. Add users via the Users tab and assign them this farm's ID.
+                    No members yet. Create users via the Users tab and assign them this farm.
                   </p>
                 ) : (
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 4 }}>
@@ -316,20 +427,26 @@ function FarmsTab() {
                       </tr>
                     </thead>
                     <tbody>
-                      {members.map(m => (
-                        <tr key={m.userId} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
-                          <td style={{ padding: '8px', fontWeight: 500, color: '#111827' }}>
-                            {m.user.firstName} {m.user.lastName}
-                          </td>
-                          <td style={{ padding: '8px', color: '#6b7280' }}>{m.user.email}</td>
-                          <td style={{ padding: '8px' }}>
-                            <span className={`badge ${m.role === 'MANAGER' ? 'badge-green' : m.role === 'FARM_ADMIN' ? 'badge-amber' : 'badge-gray'}`}>
-                              {m.role.replace('_', ' ').toLowerCase()}
-                            </span>
-                          </td>
-                          <td style={{ padding: '8px', color: '#9ca3af' }}>{formatDate(m.joinedAt)}</td>
-                        </tr>
-                      ))}
+                      {members.map((m: any) => {
+                        // Backend may return user nested or flat on the member object
+                        const firstName = m.user?.firstName ?? m.firstName ?? ''
+                        const lastName  = m.user?.lastName  ?? m.lastName  ?? ''
+                        const email     = m.user?.email     ?? m.email     ?? '—'
+                        const role      = m.role ?? m.user?.role ?? '—'
+                        const joinedAt  = m.joinedAt ?? m.createdAt ?? ''
+                        return (
+                          <tr key={m.userId ?? m.id} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
+                            <td style={{ padding: '8px', fontWeight: 500, color: '#111827' }}>{firstName} {lastName}</td>
+                            <td style={{ padding: '8px', color: '#6b7280' }}>{email}</td>
+                            <td style={{ padding: '8px' }}>
+                              <span className={`badge ${role === 'MANAGER' ? 'badge-green' : role === 'FARM_ADMIN' ? 'badge-amber' : 'badge-gray'}`}>
+                                {String(role).replace('_', ' ').toLowerCase()}
+                              </span>
+                            </td>
+                            <td style={{ padding: '8px', color: '#9ca3af' }}>{joinedAt ? formatDate(joinedAt) : '—'}</td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 )}
@@ -352,6 +469,65 @@ function FarmsTab() {
   )
 }
 
+// ─── EDIT FARM DETAILS FORM ───────────────────────────────────────────────────
+
+function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
+  farm: FarmResponse; onSaved: (f: FarmResponse) => void; onCancel: () => void; onError: (m: string) => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState<UpdateFarmRequest>({
+    name: farm.name, city: farm.city ?? '', country: farm.country ?? '',
+    province: farm.province ?? '', postalCode: farm.postalCode ?? '',
+    address: farm.address ?? '', timezone: farm.timezone ?? '',
+    contactName: farm.contactName ?? '', contactEmail: farm.contactEmail ?? '',
+    contactPhone: farm.contactPhone ?? '', description: farm.description ?? '',
+    defaultBayCount: farm.defaultBayCount, defaultBenchesPerBay: farm.defaultBenchesPerBay,
+    defaultSpotChecksPerBench: farm.defaultSpotChecksPerBench,
+  })
+  const s = (k: keyof UpdateFarmRequest, v: string | number | undefined) => setForm(p => ({ ...p, [k]: v }))
+
+  async function save() {
+    setSaving(true)
+    try { onSaved(await adminFarmsApi.update(farm.id, farm, form)) }
+    catch (e: any) { onError(e?.response?.data?.message ?? 'Update failed') }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <div className="card" style={{ background: '#f9fafb', border: '0.5px solid #d6f0e0' }}>
+      <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 12 }}>Edit farm details</p>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+        <FormField label="Name"><input className="input" value={form.name ?? ''} onChange={e => s('name', e.target.value)} /></FormField>
+        <FormField label="Country"><input className="input" value={form.country ?? ''} onChange={e => s('country', e.target.value)} /></FormField>
+        <FormField label="City"><input className="input" value={form.city ?? ''} onChange={e => s('city', e.target.value)} /></FormField>
+        <FormField label="Province"><input className="input" value={form.province ?? ''} onChange={e => s('province', e.target.value)} /></FormField>
+        <FormField label="Postal code"><input className="input" value={form.postalCode ?? ''} onChange={e => s('postalCode', e.target.value)} /></FormField>
+        <FormField label="Timezone"><input className="input" placeholder="America/Toronto" value={form.timezone ?? ''} onChange={e => s('timezone', e.target.value)} /></FormField>
+        <FormField label="Contact name"><input className="input" value={form.contactName ?? ''} onChange={e => s('contactName', e.target.value)} /></FormField>
+        <FormField label="Contact email"><input className="input" type="email" value={form.contactEmail ?? ''} onChange={e => s('contactEmail', e.target.value)} /></FormField>
+        <FormField label="Contact phone"><input className="input" value={form.contactPhone ?? ''} onChange={e => s('contactPhone', e.target.value)} /></FormField>
+        <FormField label="Default bays">
+          <input className="input" type="number" min={1} placeholder="Farm default"
+            value={form.defaultBayCount ?? ''} onChange={e => s('defaultBayCount', e.target.value ? Number(e.target.value) : undefined)} />
+        </FormField>
+        <FormField label="Default benches/bay">
+          <input className="input" type="number" min={1} placeholder="Farm default"
+            value={form.defaultBenchesPerBay ?? ''} onChange={e => s('defaultBenchesPerBay', e.target.value ? Number(e.target.value) : undefined)} />
+        </FormField>
+        <FormField label="Default spots/bench">
+          <input className="input" type="number" min={1} placeholder="Farm default"
+            value={form.defaultSpotChecksPerBench ?? ''} onChange={e => s('defaultSpotChecksPerBench', e.target.value ? Number(e.target.value) : undefined)} />
+        </FormField>
+      </div>
+      <FormField label="Address"><input className="input" value={form.address ?? ''} onChange={e => s('address', e.target.value)} /></FormField>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+        <button className="btn-secondary" style={{ fontSize: 12 }} onClick={onCancel}>Cancel</button>
+        <button className="btn-primary" style={{ fontSize: 12 }} onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save changes'}</button>
+      </div>
+    </div>
+  )
+}
+
 // ─── LICENSE PANEL ────────────────────────────────────────────────────────────
 
 function LicensePanel({ farm, onSaved, onError }: { farm: FarmResponse; onSaved: (f: FarmResponse) => void; onError: (m: string) => void }) {
@@ -364,14 +540,12 @@ function LicensePanel({ farm, onSaved, onError }: { farm: FarmResponse; onSaved:
     autoRenewEnabled: farm.autoRenewEnabled,
     billingEmail: farm.billingEmail ?? '',
   })
-
   async function save() {
     setSaving(true)
-    try { onSaved(await adminFarmsApi.updateLicense(farm.id, form)) }
+    try { onSaved(await adminFarmsApi.updateLicense(farm.id, form, farm)) }
     catch (e: any) { onError(e?.response?.data?.message ?? 'License update failed') }
     finally { setSaving(false) }
   }
-
   return (
     <div className="card" style={{ background: '#f9fafb', border: '0.5px solid #d6f0e0' }}>
       <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 14 }}>Update license</p>
@@ -379,15 +553,15 @@ function LicensePanel({ farm, onSaved, onError }: { farm: FarmResponse; onSaved:
         <FormField label="Status">
           <select className="input" value={form.subscriptionStatus}
             onChange={e => setForm(p => ({ ...p, subscriptionStatus: e.target.value as any }))}>
-            {['PENDING_ACTIVATION', 'ACTIVE', 'SUSPENDED', 'CANCELLED'].map(s => (
-              <option key={s} value={s}>{s.replace('_', ' ')}</option>
+            {['PENDING_ACTIVATION','ACTIVE','SUSPENDED','CANCELLED'].map(s => (
+              <option key={s} value={s}>{s.replace('_',' ')}</option>
             ))}
           </select>
         </FormField>
         <FormField label="Tier">
           <select className="input" value={form.subscriptionTier}
             onChange={e => setForm(p => ({ ...p, subscriptionTier: e.target.value as any }))}>
-            {['BASIC', 'STANDARD', 'PREMIUM'].map(t => <option key={t} value={t}>{t}</option>)}
+            {['BASIC','STANDARD','PREMIUM'].map(t => <option key={t} value={t}>{t}</option>)}
           </select>
         </FormField>
         <FormField label="Licensed area (ha)">
@@ -395,11 +569,11 @@ function LicensePanel({ farm, onSaved, onError }: { farm: FarmResponse; onSaved:
             onChange={e => setForm(p => ({ ...p, licensedAreaHectares: e.target.value ? Number(e.target.value) : undefined }))} />
         </FormField>
         <FormField label="License start date">
-          <input className="input" type="date" value={(form as any).licenseStartDate?.slice(0, 10) ?? ''}
+          <input className="input" type="date" value={(form as any).licenseStartDate?.slice(0,10) ?? ''}
             onChange={e => setForm(p => ({ ...p, licenseStartDate: e.target.value || undefined } as any))} />
         </FormField>
         <FormField label="Expiry date">
-          <input className="input" type="date" value={form.licenseExpiryDate?.slice(0, 10) ?? ''}
+          <input className="input" type="date" value={form.licenseExpiryDate?.slice(0,10) ?? ''}
             onChange={e => setForm(p => ({ ...p, licenseExpiryDate: e.target.value || undefined }))} />
         </FormField>
         <FormField label="Billing email">
@@ -414,9 +588,7 @@ function LicensePanel({ farm, onSaved, onError }: { farm: FarmResponse; onSaved:
           Auto-renew enabled
         </label>
         <div style={{ flex: 1 }} />
-        <button className="btn-primary" onClick={save} disabled={saving}>
-          {saving ? 'Saving…' : 'Save license'}
-        </button>
+        <button className="btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save license'}</button>
       </div>
     </div>
   )
@@ -426,32 +598,18 @@ function LicensePanel({ farm, onSaved, onError }: { farm: FarmResponse; onSaved:
 
 function CreateFarmForm({ onCreated, onCancel, onError }: { onCreated: (f: FarmResponse) => void; onCancel: () => void; onError: (m: string) => void }) {
   const { user } = useAuthStore()
-
-  // Use current super admin's ID if available, otherwise the null UUID as placeholder
   const NULL_UUID = '00000000-0000-0000-0000-000000000000'
-  const defaultOwnerId = user?.id ?? NULL_UUID
-
   const [saving, setSaving] = useState(false)
   const [useNullOwner, setUseNullOwner] = useState(!user?.id)
   const [form, setForm] = useState<CreateFarmRequest>({
-    name: '',
-    ownerId: defaultOwnerId,
-    subscriptionStatus: 'PENDING_ACTIVATION',
-    licensedAreaHectares: 1,
-    subscriptionTier: 'BASIC',
-    country: '',
-    city: '',
-    timezone: 'UTC',
-    contactEmail: '',
+    name: '', ownerId: user?.id ?? NULL_UUID,
+    subscriptionStatus: 'PENDING_ACTIVATION', licensedAreaHectares: 1,
+    subscriptionTier: 'BASIC', structureType: 'GREENHOUSE',
+    country: '', city: '', timezone: 'UTC', contactEmail: '',
+    defaultBayCount: undefined, defaultBenchesPerBay: undefined,
+    defaultSpotChecksPerBench: undefined, fieldBlocks: [], greenhouses: [],
   })
-
-  const set = (k: keyof CreateFarmRequest, v: string | number) =>
-    setForm(p => ({ ...p, [k]: v }))
-
-  function handleUseNullOwner(checked: boolean) {
-    setUseNullOwner(checked)
-    set('ownerId', checked ? NULL_UUID : (user?.id ?? NULL_UUID))
-  }
+  const set = (k: keyof CreateFarmRequest, v: string | number | undefined) => setForm(p => ({ ...p, [k]: v }))
 
   async function create() {
     if (!form.name.trim()) { onError('Farm name is required'); return }
@@ -469,17 +627,22 @@ function CreateFarmForm({ onCreated, onCancel, onError }: { onCreated: (f: FarmR
           <input className="input" placeholder="e.g. Green Valley Greenhouse"
             value={form.name} onChange={e => set('name', e.target.value)} />
         </FormField>
+        <FormField label="Farm layout *">
+          <select className="input" value={form.structureType} onChange={e => set('structureType', e.target.value)}>
+            <option value="GREENHOUSE">Greenhouse</option>
+            <option value="FIELD">Field</option>
+            <option value="OTHER">Other</option>
+          </select>
+        </FormField>
         <FormField label="Subscription tier">
-          <select className="input" value={form.subscriptionTier}
-            onChange={e => set('subscriptionTier', e.target.value)}>
+          <select className="input" value={form.subscriptionTier} onChange={e => set('subscriptionTier', e.target.value)}>
             <option value="BASIC">Basic</option>
             <option value="STANDARD">Standard</option>
             <option value="PREMIUM">Premium</option>
           </select>
         </FormField>
         <FormField label="Initial status">
-          <select className="input" value={form.subscriptionStatus}
-            onChange={e => set('subscriptionStatus', e.target.value)}>
+          <select className="input" value={form.subscriptionStatus} onChange={e => set('subscriptionStatus', e.target.value)}>
             <option value="PENDING_ACTIVATION">Pending activation</option>
             <option value="ACTIVE">Active</option>
           </select>
@@ -490,142 +653,177 @@ function CreateFarmForm({ onCreated, onCancel, onError }: { onCreated: (f: FarmR
             onChange={e => set('licensedAreaHectares', parseFloat(e.target.value) || 0)} />
         </FormField>
         <FormField label="Country">
-          <input className="input" placeholder="e.g. Canada"
-            value={form.country ?? ''} onChange={e => set('country', e.target.value)} />
+          <input className="input" value={form.country ?? ''} onChange={e => set('country', e.target.value)} />
         </FormField>
         <FormField label="City">
-          <input className="input" placeholder="e.g. Leamington"
-            value={form.city ?? ''} onChange={e => set('city', e.target.value)} />
+          <input className="input" value={form.city ?? ''} onChange={e => set('city', e.target.value)} />
         </FormField>
         <FormField label="Contact email">
-          <input className="input" type="email"
-            value={form.contactEmail ?? ''} onChange={e => set('contactEmail', e.target.value)} />
+          <input className="input" type="email" value={form.contactEmail ?? ''} onChange={e => set('contactEmail', e.target.value)} />
         </FormField>
         <FormField label="Timezone">
-          <input className="input" placeholder="America/Toronto"
-            value={form.timezone ?? ''} onChange={e => set('timezone', e.target.value)} />
+          <input className="input" placeholder="America/Toronto" value={form.timezone ?? ''} onChange={e => set('timezone', e.target.value)} />
         </FormField>
         <FormField label="Contact name">
-          <input className="input"
-            value={form.contactName ?? ''} onChange={e => set('contactName', e.target.value)} />
+          <input className="input" value={form.contactName ?? ''} onChange={e => set('contactName', e.target.value)} />
         </FormField>
         <FormField label="Contact phone">
-          <input className="input"
-            value={form.contactPhone ?? ''} onChange={e => set('contactPhone', e.target.value)} />
+          <input className="input" value={form.contactPhone ?? ''} onChange={e => set('contactPhone', e.target.value)} />
         </FormField>
       </div>
-
-      {/* Owner ID section */}
+      <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 8 }}>Default structure counts (optional — backend uses system defaults if blank)</p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 14 }}>
+        <FormField label={form.structureType === 'FIELD' ? 'Default bays (rows)' : 'Default bays'}>
+          <input className="input" type="number" min={1} placeholder="System default"
+            value={form.defaultBayCount ?? ''} onChange={e => set('defaultBayCount', e.target.value ? Number(e.target.value) : undefined)} />
+        </FormField>
+        {form.structureType !== 'FIELD' && (
+          <FormField label="Default benches/bay">
+            <input className="input" type="number" min={1} placeholder="System default"
+              value={form.defaultBenchesPerBay ?? ''} onChange={e => set('defaultBenchesPerBay', e.target.value ? Number(e.target.value) : undefined)} />
+          </FormField>
+        )}
+        <FormField label={form.structureType === 'FIELD' ? 'Default spots/bay' : 'Default spots/bench'}>
+          <input className="input" type="number" min={1} placeholder="System default"
+            value={form.defaultSpotChecksPerBench ?? ''} onChange={e => set('defaultSpotChecksPerBench', e.target.value ? Number(e.target.value) : undefined)} />
+        </FormField>
+      </div>
       <div style={{ marginBottom: 14 }}>
         <FormField label="Farm owner (User ID) *">
-          <input
-            className="input"
-            placeholder="UUID of the farm owner"
-            value={form.ownerId}
-            disabled={useNullOwner}
+          <input className="input" value={form.ownerId} disabled={useNullOwner}
             style={{ opacity: useNullOwner ? 0.5 : 1 }}
-            onChange={e => set('ownerId', e.target.value)}
-          />
+            onChange={e => set('ownerId', e.target.value)} />
         </FormField>
         <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 7, cursor: 'pointer', fontSize: 12, color: '#374151' }}>
-          <input
-            type="checkbox"
-            checked={useNullOwner}
-            onChange={e => handleUseNullOwner(e.target.checked)}
-          />
-          No owner yet — use placeholder ID (all zeroes)
+          <input type="checkbox" checked={useNullOwner} onChange={e => { setUseNullOwner(e.target.checked); set('ownerId', e.target.checked ? NULL_UUID : (user?.id ?? NULL_UUID)) }} />
+          No owner yet — use placeholder (all zeroes)
         </label>
         {useNullOwner && (
           <div style={{ marginTop: 6, padding: '7px 10px', background: '#fffbf0', border: '0.5px solid #fde68a', borderRadius: 6, fontSize: 11, color: '#d97706' }}>
-            Farm will be created with a placeholder owner ID. When you create the first Farm Admin or Manager user and assign them this farm, their user ID will be automatically set as the owner.
+            Farm will be created with a placeholder owner. When you create the first Farm Admin or Manager for this farm, they will be automatically set as the owner.
           </div>
         )}
-        {!useNullOwner && user?.id && form.ownerId === user.id && (
-          <p style={{ fontSize: 11, color: '#9ca3af', marginTop: 5 }}>
-            Pre-filled with your user ID. Change to assign ownership to a different user.
-          </p>
-        )}
       </div>
-
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button className="btn-secondary" onClick={onCancel}>Cancel</button>
-        <button className="btn-primary" onClick={create} disabled={saving}>
-          {saving ? 'Creating…' : 'Create farm'}
-        </button>
+        <button className="btn-primary" onClick={create} disabled={saving}>{saving ? 'Creating…' : 'Create farm'}</button>
       </div>
     </div>
   )
 }
 
-// ─── CREATE GREENHOUSE FORM ───────────────────────────────────────────────────
+// ─── STRUCTURE FORM (Greenhouse or Field block, create + edit) ────────────────
 
-function CreateGreenhouseForm({ farmId, onCreated, onCancel, onError }: { farmId: string; onCreated: (g: GreenhouseResponse) => void; onCancel: () => void; onError: (m: string) => void }) {
+function StructureForm({ farmId, farmType, farm, existing, onSaved, onCancel, onError }: {
+  farmId: string; farmType: FarmStructureType; farm: FarmResponse
+  existing?: GreenhouseResponse | FieldBlockResponse | null
+  onSaved: (s: GreenhouseResponse | FieldBlockResponse) => void
+  onCancel: () => void; onError: (m: string) => void
+}) {
+  const isField = farmType === 'FIELD'
+  const isEdit  = !!existing
   const [saving, setSaving] = useState(false)
-  const [form, setForm] = useState<CreateGreenhouseRequest>({ farmId, name: '', structureType: 'GREENHOUSE', bayCount: 10, benchesPerBay: 7 })
+  const [name, setName] = useState(existing?.name ?? '')
+  const [description, setDescription] = useState(existing?.description ?? '')
+  const [bayCount, setBayCount] = useState(existing?.bayCount != null ? String(existing.bayCount) : '')
+  const [benchesPerBay, setBenchesPerBay] = useState(
+    !isField && (existing as GreenhouseResponse)?.benchesPerBay != null
+      ? String((existing as GreenhouseResponse).benchesPerBay) : '')
+  const [spotChecks, setSpotChecks] = useState(
+    isField
+      ? (existing as FieldBlockResponse)?.spotChecksPerBay != null ? String((existing as FieldBlockResponse).spotChecksPerBay) : ''
+      : (existing as GreenhouseResponse)?.spotChecksPerBench != null ? String((existing as GreenhouseResponse).spotChecksPerBench) : '')
+  const [bayTagsRaw, setBayTagsRaw] = useState(
+    isField ? ((existing as FieldBlockResponse)?.bayTags ?? []).join(', ') : '')
+  const [active, setActive] = useState(existing ? existing.active : true)
 
-  async function create() {
-    if (!form.name.trim()) { onError('Structure name is required'); return }
+  async function save() {
+    if (!name.trim()) { onError('Name is required'); return }
     setSaving(true)
-    try { onCreated(await adminFarmsApi.createGreenhouse(form)) }
-    catch (e: any) { onError(e?.response?.data?.message ?? 'Failed to create structure') }
+    try {
+      if (isField) {
+        const body = { farmId, name, description: description || undefined,
+          bayCount: bayCount ? Number(bayCount) : null,
+          spotChecksPerBay: spotChecks ? Number(spotChecks) : null,
+          bayTags: bayTagsRaw ? bayTagsRaw.split(',').map(t => t.trim()).filter(Boolean) : undefined, active }
+        onSaved(isEdit ? await adminFarmsApi.updateFieldBlock(farmId, existing!.id, body) : await adminFarmsApi.createFieldBlock(farmId, body))
+      } else {
+        const body = { farmId, name, description: description || undefined,
+          bayCount: bayCount ? Number(bayCount) : null,
+          benchesPerBay: benchesPerBay ? Number(benchesPerBay) : null,
+          spotChecksPerBench: spotChecks ? Number(spotChecks) : null, active }
+        onSaved(isEdit ? await adminFarmsApi.updateGreenhouse(farmId, existing!.id, body) : await adminFarmsApi.createGreenhouse(farmId, body))
+      }
+    } catch (e: any) { onError(e?.response?.data?.message ?? `Failed to ${isEdit ? 'update' : 'create'}`) }
     finally { setSaving(false) }
   }
 
   return (
-    <div style={{ background: '#f9fafb', border: '0.5px solid #e5e7eb', borderRadius: 8, padding: 14, marginBottom: 12 }}>
-      <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 12 }}>New structure</p>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 10 }}>
+    <div style={{ background: '#f9fafb', border: '0.5px solid #d6f0e0', borderRadius: 8, padding: 14, marginBottom: 12 }}>
+      <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 12 }}>
+        {isEdit ? `Edit ${isField ? 'field block' : 'greenhouse'}` : `New ${isField ? 'field block' : 'greenhouse'}`}
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 10 }}>
         <FormField label="Name *">
-          <input className="input" placeholder="e.g. Greenhouse A" value={form.name}
-            onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
+          <input className="input" placeholder={isField ? 'e.g. Block A' : 'e.g. Greenhouse A'}
+            value={name} onChange={e => setName(e.target.value)} />
         </FormField>
-        <FormField label="Type">
-          <select className="input" value={form.structureType}
-            onChange={e => setForm(p => ({ ...p, structureType: e.target.value as any }))}>
-            <option value="GREENHOUSE">Greenhouse</option>
-            <option value="FIELD">Field</option>
-            <option value="OTHER">Other</option>
-          </select>
+        <FormField label="Description">
+          <input className="input" value={description} onChange={e => setDescription(e.target.value)} />
         </FormField>
-        <FormField label="Bays">
-          <input className="input" type="number" min={1} max={200} value={form.bayCount}
-            onChange={e => setForm(p => ({ ...p, bayCount: Number(e.target.value) }))} />
+        <FormField label={`Bays${isField ? ' (rows)' : ''} — leave blank to use farm default${farm.defaultBayCount != null ? ` (${farm.defaultBayCount})` : ''}`}>
+          <input className="input" type="number" min={1} placeholder="Blank = farm default"
+            value={bayCount} onChange={e => setBayCount(e.target.value)} />
         </FormField>
-        <FormField label="Benches / bay">
-          <input className="input" type="number" min={1} max={50} value={form.benchesPerBay}
-            onChange={e => setForm(p => ({ ...p, benchesPerBay: Number(e.target.value) }))} />
+        {!isField && (
+          <FormField label={`Benches/bay — leave blank to use farm default${farm.defaultBenchesPerBay != null ? ` (${farm.defaultBenchesPerBay})` : ''}`}>
+            <input className="input" type="number" min={1} placeholder="Blank = farm default"
+              value={benchesPerBay} onChange={e => setBenchesPerBay(e.target.value)} />
+          </FormField>
+        )}
+        <FormField label={`${isField ? 'Spots/bay' : 'Spots/bench'} — leave blank to use farm default${farm.defaultSpotChecksPerBench != null ? ` (${farm.defaultSpotChecksPerBench})` : ''}`}>
+          <input className="input" type="number" min={1} placeholder="Blank = farm default"
+            value={spotChecks} onChange={e => setSpotChecks(e.target.value)} />
         </FormField>
+        {isField && (
+          <FormField label="Bay tags — comma-separated (optional)">
+            <input className="input" placeholder="Row-1, Row-2, Row-3"
+              value={bayTagsRaw} onChange={e => setBayTagsRaw(e.target.value)} />
+          </FormField>
+        )}
       </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: '#374151', cursor: 'pointer', marginBottom: 10 }}>
+        <input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} /> Active
+      </label>
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button className="btn-secondary" style={{ fontSize: 11 }} onClick={onCancel}>Cancel</button>
-        <button className="btn-primary" style={{ fontSize: 11 }} onClick={create} disabled={saving}>
-          {saving ? 'Creating…' : 'Create structure'}
+        <button className="btn-primary" style={{ fontSize: 11 }} onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : isEdit ? 'Save changes' : `Create ${isField ? 'field block' : 'greenhouse'}`}
         </button>
       </div>
     </div>
   )
 }
 
-// ─── USERS TAB ────────────────────────────────────────────────────────────────
+
 
 function UsersTab() {
   const [users, setUsers] = useState<UserDto[]>([])
   const [farms, setFarms] = useState<FarmResponse[]>([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(0)
   const [loading, setLoading] = useState(false)
-  const [loadingMore, setLoadingMore] = useState(false)
+  const [selectedUser, setSelectedUser] = useState<UserDto | null>(null)
   const [roleFilter, setRoleFilter] = useState('')
   const [emailFilter, setEmailFilter] = useState('')
   const [farmFilter, setFarmFilter] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
-  const PAGE_SIZE = 25
 
-  // Load all farms once so we can resolve farm name from farmId
   useEffect(() => {
-    adminFarmsApi.listAll().then(setFarms).catch(() => {})
+    adminFarmsApi.listAll()
+      .then(data => setFarms(Array.isArray(data) ? data : (data as any).content ?? []))
+      .catch(() => {})
   }, [])
 
   const farmMap = Object.fromEntries(farms.map(f => [f.id, f]))
@@ -635,37 +833,32 @@ function UsersTab() {
     else { setSuccess(msg); setTimeout(() => setSuccess(null), 3000) }
   }
 
-  const loadUsers = useCallback((reset = false) => {
-    const nextPage = reset ? 0 : page
-    if (reset) setPage(0)
-    const isFirst = reset || nextPage === 0
-    isFirst ? setLoading(true) : setLoadingMore(true)
-    adminUsersApi.search({
-      role: roleFilter as any || undefined,
-      email: emailFilter || undefined,
+  const loadUsers = useCallback(() => {
+    setLoading(true)
+    adminUsersApi.list({
       farmId: farmFilter || undefined,
-      page: nextPage,
-      size: PAGE_SIZE,
-    }).then(data => {
-      if (isFirst) setUsers(data.content)
-      else setUsers(prev => [...prev, ...data.content])
-      setTotal(data.totalElements)
-      if (!reset) setPage(nextPage + 1)
-    }).catch(e => {
-      flash(`Could not load users: ${e?.response?.data?.message ?? e?.message ?? 'Unknown error'}`, true)
-    }).finally(() => {
-      setLoading(false)
-      setLoadingMore(false)
-    })
-  }, [roleFilter, emailFilter, farmFilter, page])
+      role:   roleFilter || undefined,
+    }).then((items: UserDto[]) => {
+      // Client-side filter by email since the backend doesn't support it as a param
+      const filtered = emailFilter
+        ? items.filter(u => u.email.toLowerCase().includes(emailFilter.toLowerCase()))
+        : items
+      setUsers(filtered)
+      setTotal(filtered.length)
+    }).catch((e: any) => {
+      const msg = e?.response?.data?.message ?? e?.message ?? 'Unknown error'
+      console.error('[PestScout] Failed to load users:', e?.response?.status, msg, e?.response?.data)
+      flash(`Could not load users: ${msg}`, true)
+    }).finally(() => setLoading(false))
+  }, [roleFilter, emailFilter, farmFilter])
 
-  // Reset and reload when filters change
-  useEffect(() => { loadUsers(true) }, [roleFilter, emailFilter, farmFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadUsers() }, [roleFilter, emailFilter, farmFilter]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleToggle(u: UserDto) {
     try {
       const updated = await adminUsersApi.setEnabled(u.id, !u.isEnabled)
       setUsers(prev => prev.map(x => x.id === u.id ? updated : x))
+      if (selectedUser?.id === u.id) setSelectedUser(updated)
       flash(`User ${updated.isEnabled ? 'enabled' : 'disabled'}`)
     } catch { flash('Failed to update user', true) }
   }
@@ -674,6 +867,7 @@ function UsersTab() {
     try {
       const updated = await adminUsersApi.reactivate(u.id)
       setUsers(prev => prev.map(x => x.id === u.id ? updated : x))
+      if (selectedUser?.id === u.id) setSelectedUser(updated)
       flash(`${u.firstName} ${u.lastName} reactivated`)
     } catch (e: any) { flash(e?.response?.data?.message ?? 'Reactivation failed', true) }
   }
@@ -682,13 +876,12 @@ function UsersTab() {
     SUPER_ADMIN: '#1e5c3a', FARM_ADMIN: '#2d7a50', MANAGER: '#164530', SCOUT: '#4b5563', EDGE_SYNC: '#6b7280',
   }
 
-  const hasMore = users.length < total
-
   return (
     <div>
       {error && <Banner type="error">{error}</Banner>}
       {success && <Banner type="success">{success}</Banner>}
 
+      {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <input className="input" style={{ width: 200 }} placeholder="Filter by email…"
           value={emailFilter} onChange={e => setEmailFilter(e.target.value)} />
@@ -702,14 +895,10 @@ function UsersTab() {
         <select className="input" style={{ width: 180 }} value={farmFilter}
           onChange={e => setFarmFilter(e.target.value)}>
           <option value="">All farms</option>
-          {farms.map(f => (
-            <option key={f.id} value={f.id}>{f.name}</option>
-          ))}
+          {farms.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
         </select>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: '#9ca3af' }}>
-          {users.length} / {total} users
-        </span>
+        <span style={{ fontSize: 12, color: '#9ca3af' }}>{users.length} / {total} users</span>
         <button className="btn-primary" style={{ fontSize: 11, padding: '5px 12px' }}
           onClick={() => setShowCreate(true)}>+ New user</button>
       </div>
@@ -717,7 +906,12 @@ function UsersTab() {
       {showCreate && (
         <Modal title="Create user" onClose={() => setShowCreate(false)}>
           <CreateUserForm
-            onCreated={u => { setUsers(prev => [u, ...prev]); setShowCreate(false); flash(`User ${u.email} created`) }}
+            onCreated={u => {
+              setUsers(prev => [u, ...prev])
+              setSelectedUser(u)
+              setShowCreate(false)
+              flash(`User ${u.email} created`)
+            }}
             onCancel={() => setShowCreate(false)}
             onError={msg => flash(msg, true)}
           />
@@ -725,91 +919,167 @@ function UsersTab() {
       )}
 
       {loading ? <p style={{ fontSize: 12, color: '#9ca3af' }}>Loading…</p> : (
-        <>
-          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead style={{ background: '#f9fafb' }}>
-                <tr>
-                  {['Name', 'Email', 'Role', 'Farm', 'Last login', 'Status', ''].map(h => (
-                    <th key={h} style={{ textAlign: 'left', padding: '8px 12px', fontSize: 10, fontWeight: 500, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: '0.5px solid #e5e7eb' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {users.map(u => {
-                  const farm = u.farmId ? farmMap[u.farmId] : null
-                  return (
-                  <tr key={u.id} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
-                    <td style={{ padding: '9px 12px', fontWeight: 500, color: '#111827' }}>{u.firstName} {u.lastName}</td>
-                    <td style={{ padding: '9px 12px', color: '#6b7280' }}>{u.email}</td>
-                    <td style={{ padding: '9px 12px' }}>
-                      <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 20, background: ROLE_COLORS[u.role] ?? '#e5e7eb', color: ROLE_COLORS[u.role] ? '#fff' : '#374151' }}>
-                        {u.role.replace('_', ' ')}
-                      </span>
-                    </td>
-                    <td style={{ padding: '9px 12px' }}>
-                      {farm ? (
-                        <div>
-                          <p style={{ fontSize: 12, color: '#111827', fontWeight: 500 }}>{farm.name}</p>
-                          <p style={{ fontSize: 10, color: '#9ca3af' }}>{farm.subscriptionTier}</p>
-                        </div>
-                      ) : u.role === 'SUPER_ADMIN' ? (
-                        <span style={{ fontSize: 11, color: '#9ca3af', fontStyle: 'italic' }}>Global</span>
-                      ) : (
-                        <span style={{ fontSize: 11, color: '#d97706' }}>Unknown farm</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '9px 12px', color: '#9ca3af' }}>{u.lastLogin ? formatDate(u.lastLogin) : 'Never'}</td>
-                    <td style={{ padding: '9px 12px' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                        <span className={`badge ${u.isEnabled && u.active ? 'badge-green' : u.reactivationRequired ? 'badge-amber' : 'badge-gray'}`}>
-                          {u.reactivationRequired ? 'Needs reactivation' : u.isEnabled && u.active ? 'Active' : 'Disabled'}
-                        </span>
-                        {u.passwordChangeRequired && (
-                          <span className="badge badge-amber" style={{ fontSize: 9 }}>Password change required</span>
-                        )}
-                      </div>
-                    </td>
-                    <td style={{ padding: '9px 12px' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        <button onClick={() => handleToggle(u)}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: u.isEnabled ? '#e05252' : '#2d7a50', fontSize: 11, fontFamily: 'inherit', padding: '2px 0', textAlign: 'left' }}>
-                          {u.isEnabled ? 'Disable' : 'Enable'}
-                        </button>
-                        {u.reactivationRequired && (
-                          <button onClick={() => handleReactivate(u)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2d7a50', fontSize: 11, fontFamily: 'inherit', padding: '2px 0', textAlign: 'left', fontWeight: 500 }}>
-                            Reactivate
-                          </button>
-                        )}
-                      </div>
-                    </td>
+        <div style={{ display: 'grid', gridTemplateColumns: selectedUser ? '1fr 340px' : '1fr', gap: 16 }}>
+
+          {/* User list */}
+          <div>
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead style={{ background: '#f9fafb' }}>
+                  <tr>
+                    {['Name', 'Email', 'Role', 'Farm', 'Last login', 'Status'].map(h => (
+                      <th key={h} style={{ textAlign: 'left', padding: '8px 12px', fontSize: 10, fontWeight: 500, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: '0.5px solid #e5e7eb' }}>{h}</th>
+                    ))}
                   </tr>
-                )})}
-                {users.length === 0 && (
-                  <tr><td colSpan={7} style={{ padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>No users found</td></tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {users.map(u => {
+                    const farm = u.farmId ? farmMap[u.farmId] : null
+                    const isSelected = selectedUser?.id === u.id
+                    return (
+                      <tr key={u.id}
+                        onClick={() => setSelectedUser(isSelected ? null : u)}
+                        style={{
+                          borderBottom: '0.5px solid #f3f4f6', cursor: 'pointer',
+                          background: isSelected ? '#f0faf4' : undefined,
+                        }}
+                        onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = '#f9fafb' }}
+                        onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = '' }}>
+                        <td style={{ padding: '9px 12px', fontWeight: 500, color: '#111827' }}>
+                          {u.firstName} {u.lastName}
+                        </td>
+                        <td style={{ padding: '9px 12px', color: '#6b7280' }}>{u.email}</td>
+                        <td style={{ padding: '9px 12px' }}>
+                          <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 20, background: ROLE_COLORS[u.role] ?? '#e5e7eb', color: ROLE_COLORS[u.role] ? '#fff' : '#374151' }}>
+                            {u.role.replace('_', ' ')}
+                          </span>
+                        </td>
+                        <td style={{ padding: '9px 12px' }}>
+                          {farm ? (
+                            <div>
+                              <p style={{ fontSize: 12, color: '#111827', fontWeight: 500 }}>{farm.name}</p>
+                              <p style={{ fontSize: 10, color: '#9ca3af' }}>{farm.subscriptionTier}</p>
+                            </div>
+                          ) : u.role === 'SUPER_ADMIN' ? (
+                            <span style={{ fontSize: 11, color: '#9ca3af', fontStyle: 'italic' }}>Global</span>
+                          ) : (
+                            <span style={{ fontSize: 11, color: '#d97706' }}>No farm</span>
+                          )}
+                        </td>
+                        <td style={{ padding: '9px 12px', color: '#9ca3af' }}>{u.lastLogin ? formatDate(u.lastLogin) : 'Never'}</td>
+                        <td style={{ padding: '9px 12px' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            <span className={`badge ${u.isEnabled && u.active ? 'badge-green' : u.reactivationRequired ? 'badge-amber' : 'badge-gray'}`}>
+                              {u.reactivationRequired ? 'Needs reactivation' : u.isEnabled && u.active ? 'Active' : 'Disabled'}
+                            </span>
+                            {u.passwordChangeRequired && (
+                              <span className="badge badge-amber" style={{ fontSize: 9 }}>Pw change required</span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {users.length === 0 && (
+                    <tr><td colSpan={6} style={{ padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>No users found</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
-          {hasMore && (
-            <div style={{ marginTop: 12, textAlign: 'center' }}>
-              <button
-                className="btn-secondary"
-                style={{ fontSize: 12 }}
-                onClick={() => loadUsers(false)}
-                disabled={loadingMore}
-              >
-                {loadingMore ? 'Loading…' : `Load more (${total - users.length} remaining)`}
-              </button>
+          {/* User detail panel */}
+          {selectedUser && (
+            <div className="card" style={{ alignSelf: 'start', position: 'sticky', top: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+                <div>
+                  {/* Avatar */}
+                  <div style={{
+                    width: 44, height: 44, borderRadius: '50%',
+                    background: '#f0faf4', border: '0.5px solid #a7dcbc',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 15, fontWeight: 600, color: '#1e5c3a', marginBottom: 8,
+                  }}>
+                    {[selectedUser.firstName?.[0], selectedUser.lastName?.[0]].filter(Boolean).join('').toUpperCase()}
+                  </div>
+                  <p style={{ fontSize: 14, fontWeight: 500, color: '#111827' }}>
+                    {selectedUser.firstName} {selectedUser.lastName}
+                  </p>
+                  <p style={{ fontSize: 11, color: '#6b7280' }}>{selectedUser.email}</p>
+                </div>
+                <button onClick={() => setSelectedUser(null)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: '#9ca3af', lineHeight: 1 }}>×</button>
+              </div>
+
+              {/* Role badge */}
+              <div style={{ marginBottom: 14 }}>
+                <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 20, background: ROLE_COLORS[selectedUser.role] ?? '#e5e7eb', color: ROLE_COLORS[selectedUser.role] ? '#fff' : '#374151' }}>
+                  {selectedUser.role.replace('_', ' ')}
+                </span>
+              </div>
+
+              {/* Detail rows */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, marginBottom: 14 }}>
+                {[
+                  { label: 'Customer #', value: selectedUser.customerNumber },
+                  { label: 'Phone', value: selectedUser.phoneNumber || '—' },
+                  { label: 'Country', value: selectedUser.country || '—' },
+                  { label: 'Farm', value: selectedUser.farmId ? (farmMap[selectedUser.farmId]?.name ?? selectedUser.farmId.slice(0,8) + '…') : selectedUser.role === 'SUPER_ADMIN' ? 'Global (no farm)' : '—' },
+                  { label: 'Farm tier', value: selectedUser.farmId ? (farmMap[selectedUser.farmId]?.subscriptionTier ?? '—') : '—' },
+                  { label: 'Last login', value: selectedUser.lastLogin ? formatDate(selectedUser.lastLogin) : 'Never' },
+                  { label: 'Last activity', value: selectedUser.lastActivityAt ? formatDate(selectedUser.lastActivityAt) : '—' },
+                  { label: 'Created', value: formatDate(selectedUser.createdAt) },
+                ].map(({ label, value }) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 0', borderBottom: '0.5px solid #f9fafb' }}>
+                    <span style={{ color: '#9ca3af', flexShrink: 0 }}>{label}</span>
+                    <span style={{ color: '#374151', textAlign: 'right', wordBreak: 'break-all' }}>{value}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Status flags */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 14 }}>
+                <span className={`badge ${selectedUser.isEnabled && selectedUser.active ? 'badge-green' : 'badge-gray'}`}>
+                  {selectedUser.isEnabled && selectedUser.active ? 'Active' : 'Disabled'}
+                </span>
+                {selectedUser.passwordChangeRequired && <span className="badge badge-amber">Pw change required</span>}
+                {selectedUser.reactivationRequired && <span className="badge badge-red">Needs reactivation</span>}
+                {selectedUser.deleted && <span className="badge badge-red">Deleted</span>}
+                {selectedUser.temporaryPasswordExpiresAt && (
+                  <span className="badge badge-amber">
+                    Temp pw expires {formatDate(selectedUser.temporaryPasswordExpiresAt)}
+                  </span>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                <button
+                  onClick={() => handleToggle(selectedUser)}
+                  style={{
+                    padding: '7px 12px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
+                    fontSize: 12, fontWeight: 500, border: '0.5px solid', width: '100%',
+                    ...(selectedUser.isEnabled
+                      ? { background: '#fff5f5', borderColor: '#fca5a5', color: '#c53030' }
+                      : { background: '#f0faf4', borderColor: '#a7dcbc', color: '#1e5c3a' })
+                  }}>
+                  {selectedUser.isEnabled ? 'Disable account' : 'Enable account'}
+                </button>
+                {selectedUser.reactivationRequired && (
+                  <button onClick={() => handleReactivate(selectedUser)}
+                    style={{ padding: '7px 12px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500, border: '0.5px solid #a7dcbc', background: '#f0faf4', color: '#1e5c3a', width: '100%' }}>
+                    Reactivate account
+                  </button>
+                )}
+              </div>
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   )
 }
+
 
 // ─── CREATE USER FORM ─────────────────────────────────────────────────────────
 
@@ -847,8 +1117,8 @@ function CreateUserForm({ onCreated, onCancel, onError }: { onCreated: (u: UserD
       if (needsFarm) body.farmId = form.farmId
       const newUser = await adminUsersApi.create(body)
       // Auto-update farm owner if it was created with the null-UUID placeholder
-      if (farmNeedsOwner && newUser.id) {
-        try { await adminFarmsApi.update(form.farmId, { ownerId: newUser.id } as any) }
+      if (farmNeedsOwner && newUser.id && selectedFarm) {
+        try { await adminFarmsApi.update(form.farmId, selectedFarm, { ownerId: newUser.id }) }
         catch { console.warn('Could not auto-update farm ownerId') }
       }
       onCreated(newUser)

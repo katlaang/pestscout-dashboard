@@ -94,7 +94,7 @@ export default function FarmsPage() {
                           {farm.subscriptionTier}
                         </span>
                         <span className={`badge ${farm.subscriptionStatus === 'ACTIVE' ? 'badge-green' : 'badge-gray'}`}>
-                          {farm.subscriptionStatus.replace('_', ' ').toLowerCase()}
+                          {farm.subscriptionStatus?.replace('_', ' ').toLowerCase() ?? '—'}
                         </span>
                         {farm.accessLocked && <span className="badge badge-red">Locked</span>}
                       </div>
@@ -189,7 +189,7 @@ function EditFarmForm({ farm, onSaved, onCancel, onError }: {
   async function save() {
     setSaving(true)
     try {
-      const updated = await adminFarmsApi.update(farm.id, form)
+      const updated = await adminFarmsApi.update(farm.id, farm, form)
       onSaved(updated)
     } catch (e: any) {
       onError(e?.response?.data?.message ?? 'Failed to save')

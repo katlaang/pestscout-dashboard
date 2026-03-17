@@ -13,7 +13,9 @@ import type {
   // Super Admin
   CreateUserRequest, UpdateUserRequest, UserSearchParams, PagedResponse,
   UpdateFarmLicenseRequest, UpdateFarmRequest, CreateFarmRequest,
-  CreateGreenhouseRequest, GreenhouseResponse, FarmMemberResponse,
+  CreateGreenhouseRequest, UpdateGreenhouseRequest, GreenhouseResponse,
+  CreateFieldBlockRequest, UpdateFieldBlockRequest, FieldBlockResponse,
+  FarmMemberResponse,
   CacheInfo,
 } from '@/types'
 
@@ -208,23 +210,54 @@ export const adminUsersApi = {
   create: (body: CreateUserRequest) =>
     api.post<UserDto>('/api/auth/users', body).then(r => r.data),
 
-  search: (params: UserSearchParams) =>
-    api.get<PagedResponse<UserDto>>('/api/users', { params }).then(r => r.data),
+  // Returns a plain array — not paged. Use farmId param to filter by farm.
+  list: (params?: { farmId?: string; role?: string }) =>
+    api.get<UserDto[]>('/api/auth/users', { params }).then(r =>
+      Array.isArray(r.data) ? r.data : (r.data as any).content ?? []
+    ),
 
   get: (userId: string) =>
-    api.get<UserDto>(`/api/users/${userId}`).then(r => r.data),
+    api.get<UserDto>(`/api/auth/users/${userId}`).then(r => r.data),
 
   update: (userId: string, body: UpdateUserRequest) =>
-    api.patch<UserDto>(`/api/users/${userId}`, body).then(r => r.data),
+    api.patch<UserDto>(`/api/auth/users/${userId}`, body).then(r => r.data),
 
   setEnabled: (userId: string, enabled: boolean) =>
-    api.patch<UserDto>(`/api/users/${userId}`, { isEnabled: enabled }).then(r => r.data),
+    api.patch<UserDto>(`/api/auth/users/${userId}`, { isEnabled: enabled }).then(r => r.data),
 
   reactivate: (userId: string) =>
     api.post<UserDto>(`/api/auth/users/${userId}/reactivate`).then(r => r.data),
+}
 
-  count: (params?: { role?: string; farmId?: string }) =>
-    api.get<number>('/api/users/count', { params }).then(r => r.data),
+// ─── Helper: map FarmResponse → UpdateFarmRequest (PUT requires all fields) ──
+
+function farmToUpdateBody(farm: FarmResponse, overrides: UpdateFarmRequest = {}): UpdateFarmRequest {
+  return {
+    name:                      farm.name,
+    description:               farm.description,
+    address:                   farm.address,
+    city:                      farm.city,
+    province:                  farm.province,
+    postalCode:                farm.postalCode,
+    country:                   farm.country,
+    contactName:               farm.contactName,
+    contactEmail:              farm.contactEmail,
+    contactPhone:              farm.contactPhone,
+    timezone:                  farm.timezone,
+    ownerId:                   farm.ownerId,
+    defaultBayCount:           farm.defaultBayCount,
+    defaultBenchesPerBay:      farm.defaultBenchesPerBay,
+    defaultSpotChecksPerBench: farm.defaultSpotChecksPerBench,
+    subscriptionStatus:        farm.subscriptionStatus,
+    subscriptionTier:          farm.subscriptionTier,
+    licensedAreaHectares:      farm.licensedAreaHectares,
+    licenseExpiryDate:         farm.licenseExpiryDate,
+    autoRenewEnabled:          farm.autoRenewEnabled ?? false,
+    billingEmail:              farm.billingEmail,
+    isArchived:                false,         // NOT NULL in DB — keep false unless explicitly overriding
+    accessLocked:              farm.accessLocked ?? false,  // real field — preserve current value
+    ...overrides,
+  }
 }
 
 // ─── Super Admin — Farms ─────────────────────────────────────────────────────
@@ -233,26 +266,53 @@ export const adminFarmsApi = {
   listAll: () =>
     api.get<FarmResponse[]>('/api/farms').then(r => r.data),
 
+  getFarm: (farmId: string) =>
+    api.get<FarmResponse>(`/api/farms/${farmId}`).then(r => r.data),
+
   create: (body: CreateFarmRequest) =>
     api.post<FarmResponse>('/api/farms', body).then(r => r.data),
 
-  update: (farmId: string, body: UpdateFarmRequest) =>
-    api.patch<FarmResponse>(`/api/farms/${farmId}`, body).then(r => r.data),
+  // Backend controller only has PUT — must send full valid body
+  update: (farmId: string, currentFarm: FarmResponse, overrides: UpdateFarmRequest) =>
+    api.put<FarmResponse>(`/api/farms/${farmId}`, farmToUpdateBody(currentFarm, overrides)).then(r => r.data),
 
-  updateLicense: (farmId: string, body: UpdateFarmLicenseRequest) =>
-    api.patch<FarmResponse>(`/api/farms/${farmId}/license`, body).then(r => r.data),
+  // Archive via isArchived=true (no DELETE endpoint)
+  delete: (farmId: string, currentFarm: FarmResponse) =>
+    api.put<FarmResponse>(`/api/farms/${farmId}`, farmToUpdateBody(currentFarm, { isArchived: true })).then(r => r.data),
 
-  setAccessLocked: (farmId: string, locked: boolean) =>
-    api.patch<FarmResponse>(`/api/farms/${farmId}/license`, { accessLocked: locked }).then(r => r.data),
+  // accessLocked is a real field — toggles access without affecting subscription status
+  setAccessLocked: (farmId: string, locked: boolean, currentFarm: FarmResponse) =>
+    api.put<FarmResponse>(`/api/farms/${farmId}`, farmToUpdateBody(currentFarm, { accessLocked: locked })).then(r => r.data),
 
+  // License fields go through the same PUT
+  updateLicense: (farmId: string, body: UpdateFarmLicenseRequest, currentFarm: FarmResponse) =>
+    api.put<FarmResponse>(`/api/farms/${farmId}`, farmToUpdateBody(currentFarm, body)).then(r => r.data),
+
+  // ── Greenhouses (GREENHOUSE farms) ──────────────────────────────────────────
   listGreenhouses: (farmId: string) =>
     api.get<GreenhouseResponse[]>(`/api/farms/${farmId}/greenhouses`).then(r => r.data),
 
-  createGreenhouse: (body: CreateGreenhouseRequest) =>
-    api.post<GreenhouseResponse>(`/api/farms/${body.farmId}/greenhouses`, body).then(r => r.data),
+  createGreenhouse: (farmId: string, body: CreateGreenhouseRequest) =>
+    api.post<GreenhouseResponse>(`/api/farms/${farmId}/greenhouses`, body).then(r => r.data),
 
-  deleteGreenhouse: (farmId: string, greenhouseId: string) =>
-    api.delete(`/api/farms/${farmId}/greenhouses/${greenhouseId}`).then(r => r.data),
+  updateGreenhouse: (farmId: string, ghId: string, body: UpdateGreenhouseRequest) =>
+    api.put<GreenhouseResponse>(`/api/farms/${farmId}/greenhouses/${ghId}`, body).then(r => r.data),
+
+  deleteGreenhouse: (farmId: string, ghId: string) =>
+    api.delete(`/api/farms/${farmId}/greenhouses/${ghId}`).then(r => r.data),
+
+  // ── Field blocks (FIELD farms) ───────────────────────────────────────────────
+  listFieldBlocks: (farmId: string) =>
+    api.get<FieldBlockResponse[]>(`/api/farms/${farmId}/field-blocks`).then(r => r.data),
+
+  createFieldBlock: (farmId: string, body: CreateFieldBlockRequest) =>
+    api.post<FieldBlockResponse>(`/api/farms/${farmId}/field-blocks`, body).then(r => r.data),
+
+  updateFieldBlock: (farmId: string, blockId: string, body: UpdateFieldBlockRequest) =>
+    api.put<FieldBlockResponse>(`/api/farms/${farmId}/field-blocks/${blockId}`, body).then(r => r.data),
+
+  deleteFieldBlock: (farmId: string, blockId: string) =>
+    api.delete(`/api/farms/${farmId}/field-blocks/${blockId}`).then(r => r.data),
 
   listMembers: (farmId: string) =>
     api.get<FarmMemberResponse[]>(`/api/farms/${farmId}/members`).then(r => r.data),

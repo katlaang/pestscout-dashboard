@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { farmsApi, sessionsApi, adminFarmsApi } from '@/services/api'
-import type { FarmResponse, ScoutingSessionDetailDto, SessionStatus, GreenhouseResponse } from '@/types'
+import type { FarmResponse, ScoutingSessionDetailDto, SessionStatus, GreenhouseResponse, FieldBlockResponse } from '@/types'
 import type { CreateSessionRequest } from '@/services/api'
 import { SESSION_STATUS_BADGE, formatDate, exportToCsv, currentWeek } from '@/utils'
 import { useAuthStore } from '@/hooks/useAuth'
@@ -209,28 +209,30 @@ function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError
   onCancel: () => void
   onError: (msg: string) => void
 }) {
-  const { week, year } = currentWeek()
+  const { week } = currentWeek()
   const [saving, setSaving] = useState(false)
   const [farmId, setFarmId] = useState(defaultFarmId)
-  const [greenhouses, setGreenhouses] = useState<GreenhouseResponse[]>([])
+  const [structures, setStructures] = useState<(GreenhouseResponse | FieldBlockResponse)[]>([])
   const [form, setForm] = useState<CreateSessionRequest>({
-    farmId: defaultFarmId,
-    crop: '',
-    variety: '',
-    weekNumber: week,
-    sessionDate: new Date().toISOString().slice(0, 10),
-    notes: '',
+    farmId: defaultFarmId, crop: '', variety: '',
+    weekNumber: week, sessionDate: new Date().toISOString().slice(0, 10), notes: '',
   })
 
-  // Load greenhouses when farm changes
-  useEffect(() => {
-    if (!farmId) return
-    adminFarmsApi.listGreenhouses(farmId)
-      .then(setGreenhouses)
-      .catch(() => setGreenhouses([]))
-  }, [farmId])
+  const selectedFarm = farms.find(f => f.id === farmId)
+  const isField = selectedFarm?.structureType === 'FIELD'
+  const isOther = selectedFarm?.structureType === 'OTHER'
+  const structLabel = isField ? 'Field block' : 'Greenhouse'
 
-  function setField(k: keyof CreateSessionRequest, v: string | number) {
+  // Load structures when farm changes, branching on structureType
+  useEffect(() => {
+    if (!farmId || isOther) { setStructures([]); return }
+    const fetch = isField
+      ? adminFarmsApi.listFieldBlocks(farmId)
+      : adminFarmsApi.listGreenhouses(farmId)
+    fetch.then(data => setStructures(data as any[])).catch(() => setStructures([]))
+  }, [farmId, isField, isOther])
+
+  function setField(k: keyof CreateSessionRequest | string, v: string | number) {
     setForm(p => ({ ...p, [k]: v }))
   }
 
@@ -238,6 +240,7 @@ function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError
     setFarmId(id)
     setField('farmId', id)
     setField('greenhouseId', '')
+    setField('fieldBlockId', '')
   }
 
   async function handleCreate() {
@@ -246,7 +249,8 @@ function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError
     try {
       const body: CreateSessionRequest = {
         ...form,
-        greenhouseId: (form as any).greenhouseId || undefined,
+        greenhouseId: isField ? undefined : ((form as any).greenhouseId || undefined),
+        fieldBlockId: isField ? ((form as any).fieldBlockId || undefined) : undefined,
         crop: form.crop || undefined,
         variety: form.variety || undefined,
         notes: form.notes || undefined,
@@ -264,13 +268,10 @@ function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError
       position: 'fixed', inset: 0, zIndex: 50,
       background: 'rgba(0,0,0,0.25)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
-    }}
-      onClick={e => { if (e.target === e.currentTarget) onCancel() }}>
+    }} onClick={e => { if (e.target === e.currentTarget) onCancel() }}>
       <div style={{
-        background: '#fff', borderRadius: 12,
-        border: '0.5px solid #e5e7eb',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.12)',
-        width: '100%', maxWidth: 520, padding: 24,
+        background: '#fff', borderRadius: 12, border: '0.5px solid #e5e7eb',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.12)', width: '100%', maxWidth: 520, padding: 24,
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h2 style={{ fontSize: 14, color: '#111827' }}>New scouting session</h2>
@@ -278,24 +279,25 @@ function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-
-          {/* Farm */}
           <Field label="Farm *">
             <select className="input" value={farmId} onChange={e => handleFarmChange(e.target.value)}>
               {farms.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
             </select>
           </Field>
 
-          {/* Greenhouse (optional) */}
-          <Field label="Greenhouse / field block">
-            <select className="input" value={(form as any).greenhouseId ?? ''}
-              onChange={e => setField('greenhouseId' as any, e.target.value)}>
-              <option value="">— None selected —</option>
-              {greenhouses.map(g => (
-                <option key={g.id} value={g.id}>{g.name} ({g.structureType.toLowerCase()})</option>
-              ))}
-            </select>
-          </Field>
+          {/* Structure selector — only shown for GREENHOUSE or FIELD farms */}
+          {!isOther && structures.length > 0 && (
+            <Field label={`${structLabel} (optional)`}>
+              <select className="input"
+                value={isField ? ((form as any).fieldBlockId ?? '') : ((form as any).greenhouseId ?? '')}
+                onChange={e => setField(isField ? 'fieldBlockId' : 'greenhouseId', e.target.value)}>
+                <option value="">— None selected —</option>
+                {structures.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </Field>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <Field label="Crop">
@@ -322,13 +324,8 @@ function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError
           </Field>
         </div>
 
-        {/* Role reminder */}
-        <div style={{
-          marginTop: 14, padding: '8px 12px', borderRadius: 7,
-          background: '#f0faf4', border: '0.5px solid #a7dcbc',
-          fontSize: 12, color: '#1e5c3a',
-        }}>
-          Scouts will be assigned to this session and will record observations using the mobile app.
+        <div style={{ marginTop: 14, padding: '8px 12px', borderRadius: 7, background: '#f0faf4', border: '0.5px solid #a7dcbc', fontSize: 12, color: '#1e5c3a' }}>
+          Scouts will record observations using the mobile app within this session.
         </div>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
