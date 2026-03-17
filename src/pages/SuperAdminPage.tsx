@@ -5,7 +5,7 @@ import type {
   FarmResponse, GreenhouseResponse, FieldBlockResponse, FarmStructureType,
   UserDto, FarmMemberResponse,
   UpdateFarmLicenseRequest, UpdateFarmRequest,
-  CreateFarmRequest,
+  CreateFarmRequest, UpdateUserRequest,
   CacheInfo,
 } from '@/types'
 import { formatDate } from '@/utils'
@@ -817,6 +817,7 @@ function UsersTab() {
   const [emailFilter, setEmailFilter] = useState('')
   const [farmFilter, setFarmFilter] = useState('')
   const [showCreate, setShowCreate] = useState(false)
+  const [showEditUser, setShowEditUser] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
@@ -938,7 +939,7 @@ function UsersTab() {
                     const isSelected = selectedUser?.id === u.id
                     return (
                       <tr key={u.id}
-                        onClick={() => setSelectedUser(isSelected ? null : u)}
+                        onClick={() => { setSelectedUser(isSelected ? null : u); setShowEditUser(false) }}
                         style={{
                           borderBottom: '0.5px solid #f3f4f6', cursor: 'pointer',
                           background: isSelected ? '#f0faf4' : undefined,
@@ -993,7 +994,6 @@ function UsersTab() {
             <div className="card" style={{ alignSelf: 'start', position: 'sticky', top: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
                 <div>
-                  {/* Avatar */}
                   <div style={{
                     width: 44, height: 44, borderRadius: '50%',
                     background: '#f0faf4', border: '0.5px solid #a7dcbc',
@@ -1007,8 +1007,16 @@ function UsersTab() {
                   </p>
                   <p style={{ fontSize: 11, color: '#6b7280' }}>{selectedUser.email}</p>
                 </div>
-                <button onClick={() => setSelectedUser(null)}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: '#9ca3af', lineHeight: 1 }}>×</button>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <button
+                    onClick={() => setShowEditUser(prev => !prev)}
+                    className="btn-secondary"
+                    style={{ fontSize: 11, padding: '4px 10px' }}>
+                    {showEditUser ? 'Cancel' : 'Edit'}
+                  </button>
+                  <button onClick={() => { setSelectedUser(null); setShowEditUser(false) }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: '#9ca3af', lineHeight: 1 }}>×</button>
+                </div>
               </div>
 
               {/* Role badge */}
@@ -1018,60 +1026,78 @@ function UsersTab() {
                 </span>
               </div>
 
-              {/* Detail rows */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, marginBottom: 14 }}>
-                {[
-                  { label: 'Customer #', value: selectedUser.customerNumber },
-                  { label: 'Phone', value: selectedUser.phoneNumber || '—' },
-                  { label: 'Country', value: selectedUser.country || '—' },
-                  { label: 'Farm', value: selectedUser.farmId ? (farmMap[selectedUser.farmId]?.name ?? selectedUser.farmId.slice(0,8) + '…') : selectedUser.role === 'SUPER_ADMIN' ? 'Global (no farm)' : '—' },
-                  { label: 'Farm tier', value: selectedUser.farmId ? (farmMap[selectedUser.farmId]?.subscriptionTier ?? '—') : '—' },
-                  { label: 'Last login', value: selectedUser.lastLogin ? formatDate(selectedUser.lastLogin) : 'Never' },
-                  { label: 'Last activity', value: selectedUser.lastActivityAt ? formatDate(selectedUser.lastActivityAt) : '—' },
-                  { label: 'Created', value: formatDate(selectedUser.createdAt) },
-                ].map(({ label, value }) => (
-                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 0', borderBottom: '0.5px solid #f9fafb' }}>
-                    <span style={{ color: '#9ca3af', flexShrink: 0 }}>{label}</span>
-                    <span style={{ color: '#374151', textAlign: 'right', wordBreak: 'break-all' }}>{value}</span>
+              {/* Inline edit form */}
+              {showEditUser ? (
+                <EditUserForm
+                  user={selectedUser}
+                  farms={farms}
+                  onSaved={updated => {
+                    setUsers(prev => prev.map(u => u.id === updated.id ? updated : u))
+                    setSelectedUser(updated)
+                    setShowEditUser(false)
+                    flash(`${updated.firstName} ${updated.lastName} updated`)
+                  }}
+                  onCancel={() => setShowEditUser(false)}
+                  onError={msg => flash(msg, true)}
+                />
+              ) : (
+                <>
+                  {/* Detail rows */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, marginBottom: 14 }}>
+                    {[
+                      { label: 'Customer #', value: selectedUser.customerNumber },
+                      { label: 'Phone', value: selectedUser.phoneNumber || '—' },
+                      { label: 'Country', value: selectedUser.country || '—' },
+                      { label: 'Farm', value: selectedUser.farmId ? (farmMap[selectedUser.farmId]?.name ?? selectedUser.farmId.slice(0,8) + '…') : selectedUser.role === 'SUPER_ADMIN' ? 'Global (no farm)' : '—' },
+                      { label: 'Farm tier', value: selectedUser.farmId ? (farmMap[selectedUser.farmId]?.subscriptionTier ?? '—') : '—' },
+                      { label: 'Last login', value: selectedUser.lastLogin ? formatDate(selectedUser.lastLogin) : 'Never' },
+                      { label: 'Last activity', value: selectedUser.lastActivityAt ? formatDate(selectedUser.lastActivityAt) : '—' },
+                      { label: 'Created', value: formatDate(selectedUser.createdAt) },
+                    ].map(({ label, value }) => (
+                      <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 0', borderBottom: '0.5px solid #f9fafb' }}>
+                        <span style={{ color: '#9ca3af', flexShrink: 0 }}>{label}</span>
+                        <span style={{ color: '#374151', textAlign: 'right', wordBreak: 'break-all' }}>{value}</span>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
 
-              {/* Status flags */}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 14 }}>
-                <span className={`badge ${selectedUser.isEnabled && selectedUser.active ? 'badge-green' : 'badge-gray'}`}>
-                  {selectedUser.isEnabled && selectedUser.active ? 'Active' : 'Disabled'}
-                </span>
-                {selectedUser.passwordChangeRequired && <span className="badge badge-amber">Pw change required</span>}
-                {selectedUser.reactivationRequired && <span className="badge badge-red">Needs reactivation</span>}
-                {selectedUser.deleted && <span className="badge badge-red">Deleted</span>}
-                {selectedUser.temporaryPasswordExpiresAt && (
-                  <span className="badge badge-amber">
-                    Temp pw expires {formatDate(selectedUser.temporaryPasswordExpiresAt)}
-                  </span>
-                )}
-              </div>
+                  {/* Status flags */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 14 }}>
+                    <span className={`badge ${selectedUser.isEnabled && selectedUser.active ? 'badge-green' : 'badge-gray'}`}>
+                      {selectedUser.isEnabled && selectedUser.active ? 'Active' : 'Disabled'}
+                    </span>
+                    {selectedUser.passwordChangeRequired && <span className="badge badge-amber">Pw change required</span>}
+                    {selectedUser.reactivationRequired && <span className="badge badge-red">Needs reactivation</span>}
+                    {selectedUser.deleted && <span className="badge badge-red">Deleted</span>}
+                    {selectedUser.temporaryPasswordExpiresAt && (
+                      <span className="badge badge-amber">
+                        Temp pw expires {formatDate(selectedUser.temporaryPasswordExpiresAt)}
+                      </span>
+                    )}
+                  </div>
 
-              {/* Actions */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                <button
-                  onClick={() => handleToggle(selectedUser)}
-                  style={{
-                    padding: '7px 12px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
-                    fontSize: 12, fontWeight: 500, border: '0.5px solid', width: '100%',
-                    ...(selectedUser.isEnabled
-                      ? { background: '#fff5f5', borderColor: '#fca5a5', color: '#c53030' }
-                      : { background: '#f0faf4', borderColor: '#a7dcbc', color: '#1e5c3a' })
-                  }}>
-                  {selectedUser.isEnabled ? 'Disable account' : 'Enable account'}
-                </button>
-                {selectedUser.reactivationRequired && (
-                  <button onClick={() => handleReactivate(selectedUser)}
-                    style={{ padding: '7px 12px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500, border: '0.5px solid #a7dcbc', background: '#f0faf4', color: '#1e5c3a', width: '100%' }}>
-                    Reactivate account
-                  </button>
-                )}
-              </div>
+                  {/* Actions */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                    <button
+                      onClick={() => handleToggle(selectedUser)}
+                      style={{
+                        padding: '7px 12px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
+                        fontSize: 12, fontWeight: 500, border: '0.5px solid', width: '100%',
+                        ...(selectedUser.isEnabled
+                          ? { background: '#fff5f5', borderColor: '#fca5a5', color: '#c53030' }
+                          : { background: '#f0faf4', borderColor: '#a7dcbc', color: '#1e5c3a' })
+                      }}>
+                      {selectedUser.isEnabled ? 'Disable account' : 'Enable account'}
+                    </button>
+                    {selectedUser.reactivationRequired && (
+                      <button onClick={() => handleReactivate(selectedUser)}
+                        style={{ padding: '7px 12px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500, border: '0.5px solid #a7dcbc', background: '#f0faf4', color: '#1e5c3a', width: '100%' }}>
+                        Reactivate account
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -1080,6 +1106,107 @@ function UsersTab() {
   )
 }
 
+
+// ─── EDIT USER FORM ───────────────────────────────────────────────────────────
+
+function EditUserForm({ user, farms, onSaved, onCancel, onError }: {
+  user: UserDto
+  farms: FarmResponse[]
+  onSaved: (u: UserDto) => void
+  onCancel: () => void
+  onError: (m: string) => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({
+    firstName:   user.firstName   ?? '',
+    lastName:    user.lastName    ?? '',
+    email:       user.email       ?? '',
+    phoneNumber: user.phoneNumber ?? '',
+    country:     user.country     ?? '',
+    role:        user.role        as string,
+    isEnabled:   user.isEnabled   ?? true,
+    password:    '',               // blank = don't change password
+  })
+  const s = (k: string, v: string | boolean) => setForm(p => ({ ...p, [k]: v }))
+
+  async function save() {
+    if (!form.email.trim()) { onError('Email is required'); return }
+    if (!form.firstName.trim()) { onError('First name is required'); return }
+    if (!form.lastName.trim()) { onError('Last name is required'); return }
+    if (form.password && form.password.length < 8) { onError('New password must be at least 8 characters'); return }
+    setSaving(true)
+    try {
+      const body: UpdateUserRequest = {
+        email:       form.email       || undefined,
+        firstName:   form.firstName   || undefined,
+        lastName:    form.lastName    || undefined,
+        phoneNumber: form.phoneNumber || undefined,
+        country:     form.country     || undefined,
+        role:        form.role        as any,
+        isEnabled:   form.isEnabled,
+        password:    form.password    || undefined,
+      }
+      onSaved(await adminUsersApi.update(user.id, body))
+    } catch (e: any) {
+      onError(e?.response?.data?.message ?? 'Failed to update user')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const ROLES: string[] = ['SCOUT', 'MANAGER', 'FARM_ADMIN', 'SUPER_ADMIN']
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <FormField label="First name *">
+          <input className="input" value={form.firstName} onChange={e => s('firstName', e.target.value)} />
+        </FormField>
+        <FormField label="Last name *">
+          <input className="input" value={form.lastName} onChange={e => s('lastName', e.target.value)} />
+        </FormField>
+        <FormField label="Email *">
+          <input className="input" type="email" value={form.email} onChange={e => s('email', e.target.value)} />
+        </FormField>
+        <FormField label="Phone">
+          <input className="input" value={form.phoneNumber} onChange={e => s('phoneNumber', e.target.value)} />
+        </FormField>
+        <FormField label="Country">
+          <input className="input" placeholder="e.g. Canada" value={form.country} onChange={e => s('country', e.target.value)} />
+        </FormField>
+        <FormField label="Role">
+          <select className="input" value={form.role} onChange={e => s('role', e.target.value)}>
+            {ROLES.map(r => <option key={r} value={r}>{r.replace(/_/g, ' ')}</option>)}
+          </select>
+        </FormField>
+      </div>
+
+      <FormField label="New temporary password (leave blank to keep existing)">
+        <input className="input" type="password" placeholder="Min 8 characters"
+          value={form.password} onChange={e => s('password', e.target.value)}
+          autoComplete="new-password" />
+      </FormField>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: '#374151', cursor: 'pointer' }}>
+        <input type="checkbox" checked={!!form.isEnabled} onChange={e => s('isEnabled', e.target.checked)} />
+        Account enabled (user can log in)
+      </label>
+
+      {form.role === 'SUPER_ADMIN' && (
+        <div style={{ padding: '7px 10px', background: '#fffbf0', border: '0.5px solid #fde68a', borderRadius: 6, fontSize: 11, color: '#d97706' }}>
+          Changing this user to SUPER_ADMIN will give them global access to all farms.
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+        <button className="btn-secondary" style={{ fontSize: 12 }} onClick={onCancel}>Cancel</button>
+        <button className="btn-primary" style={{ fontSize: 12 }} onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 // ─── CREATE USER FORM ─────────────────────────────────────────────────────────
 

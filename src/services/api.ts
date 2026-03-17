@@ -135,15 +135,64 @@ export const farmsApi = {
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────
 
-export interface CreateSessionRequest {
-  farmId: string
+/** One greenhouse or field-block included in the session */
+export interface SessionTargetRequest {
   greenhouseId?: string
   fieldBlockId?: string
+  includeAllBays?: boolean        // default true
+  includeAllBenches?: boolean     // default true
+  bayTags?: string[]
+  benchTags?: string[]
+}
+
+/** POST /api/scouting/sessions — manager creates, must supply scoutId + targets */
+export interface CreateSessionRequest {
+  farmId: string
+  scoutId: string                 // required — must be a SCOUT role user
+  targets: SessionTargetRequest[] // required — at least one greenhouse or field-block
+  sessionDate: string             // ISO local date
+  weekNumber?: number
   crop?: string
   variety?: string
-  weekNumber?: number
-  sessionDate?: string
   notes?: string
+  actorName?: string
+  deviceId?: string
+}
+
+/** POST /api/scouting/sessions/{id}/submit — scout submits for manager review */
+export interface SubmitSessionRequest {
+  version: number
+  confirmationAcknowledged: boolean
+  actorName: string               // required for audit
+  comment?: string
+  deviceId?: string
+}
+
+/** POST /api/scouting/sessions/{id}/complete — manager approves */
+export interface CompleteSessionRequest {
+  version: number
+  confirmationAcknowledged: boolean
+  actorName: string               // required for audit
+  comment?: string
+  deviceId?: string
+}
+
+/** POST /api/scouting/sessions/{id}/reopen */
+export interface ReopenSessionRequest {
+  comment?: string
+  actorName?: string
+  deviceId?: string
+}
+
+/** PUT /api/scouting/sessions/{id} */
+export interface UpdateSessionRequest {
+  sessionDate?: string
+  weekNumber?: number
+  crop?: string
+  variety?: string
+  notes?: string
+  version?: number
+  actorName?: string
 }
 
 export const sessionsApi = {
@@ -158,14 +207,26 @@ export const sessionsApi = {
   create: (body: CreateSessionRequest) =>
     api.post<ScoutingSessionDetailDto>('/api/scouting/sessions', body).then(r => r.data),
 
-  complete: (sessionId: string) =>
-    api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/complete`).then(r => r.data),
+  update: (sessionId: string, body: UpdateSessionRequest) =>
+    api.put<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}`, body).then(r => r.data),
 
-  reopen: (sessionId: string) =>
-    api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/reopen`).then(r => r.data),
+  /** SCOUT or manager — moves to IN_PROGRESS */
+  start: (sessionId: string) =>
+    api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/start`).then(r => r.data),
 
-  cancel: (sessionId: string) =>
-    api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/cancel`).then(r => r.data),
+  /** SCOUT submits for manager review — requires version + actorName */
+  submit: (sessionId: string, body: SubmitSessionRequest) =>
+    api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/submit`, body).then(r => r.data),
+
+  /** Manager approves — requires version + actorName */
+  complete: (sessionId: string, body: CompleteSessionRequest) =>
+    api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/complete`, body).then(r => r.data),
+
+  reopen: (sessionId: string, body?: ReopenSessionRequest) =>
+    api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/reopen`, body ?? {}).then(r => r.data),
+
+  audits: (sessionId: string) =>
+    api.get(`/api/scouting/sessions/${sessionId}/audits`).then(r => r.data),
 }
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
@@ -220,10 +281,10 @@ export const adminUsersApi = {
     api.get<UserDto>(`/api/auth/users/${userId}`).then(r => r.data),
 
   update: (userId: string, body: UpdateUserRequest) =>
-    api.patch<UserDto>(`/api/auth/users/${userId}`, body).then(r => r.data),
+    api.put<UserDto>(`/api/auth/users/${userId}`, body).then(r => r.data),
 
   setEnabled: (userId: string, enabled: boolean) =>
-    api.patch<UserDto>(`/api/auth/users/${userId}`, { isEnabled: enabled }).then(r => r.data),
+    api.put<UserDto>(`/api/auth/users/${userId}`, { isEnabled: enabled }).then(r => r.data),
 
   reactivate: (userId: string) =>
     api.post<UserDto>(`/api/auth/users/${userId}/reactivate`).then(r => r.data),

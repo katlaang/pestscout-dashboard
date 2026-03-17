@@ -94,32 +94,35 @@ export type ObservationCategory = 'PEST' | 'DISEASE' | 'BENEFICIAL'
 
 export interface ScoutingObservationDto {
   id: string
+  version?: number
   sessionId: string
+  sessionTargetId?: string
   greenhouseId?: string
   fieldBlockId?: string
-  bayId?: string
-  benchId?: string
-  bayIndex: number
-  benchIndex: number
-  spotIndex: number
-  bayTag?: string
-  benchTag?: string
   speciesCode: SpeciesCode
   category: ObservationCategory
+  bayIndex: number
+  bayTag?: string
+  benchIndex: number
+  benchTag?: string
+  spotIndex: number
   count: number
   notes?: string
-  photoUrl?: string
+  updatedAt?: string
   syncStatus: SyncStatus
   deleted: boolean
-  createdAt: string
-  updatedAt: string
+  deletedAt?: string
+  clientRequestId?: string
 }
 
 export interface ScoutingSessionSectionDto {
+  targetId: string
   greenhouseId?: string
   fieldBlockId?: string
-  targetId: string
-  targetName?: string
+  includeAllBays?: boolean
+  includeAllBenches?: boolean
+  bayTags?: string[]
+  benchTags?: string[]
   observations: ScoutingObservationDto[]
 }
 
@@ -130,11 +133,14 @@ export interface RecommendationEntryDto {
 
 export interface ScoutingSessionDetailDto {
   id: string
+  version: number
   farmId: string
+  sessionDate: string
+  weekNumber: number
   status: SessionStatus
   syncStatus: SyncStatus
-  weekNumber: number
-  sessionDate: string
+  managerId?: string
+  scoutId?: string
   crop?: string
   variety?: string
   temperatureCelsius?: number
@@ -142,10 +148,13 @@ export interface ScoutingSessionDetailDto {
   observationTime?: string
   weatherNotes?: string
   notes?: string
+  defaultPhotoSourceType?: string
   startedAt?: string
   submittedAt?: string
   completedAt?: string
+  updatedAt?: string
   confirmationAcknowledged: boolean
+  reopenComment?: string
   sections: ScoutingSessionSectionDto[]
   recommendations: RecommendationEntryDto[]
 }
@@ -297,10 +306,13 @@ export interface CreateUserRequest {
 }
 
 export interface UpdateUserRequest {
+  email?: string
+  password?: string       // new temporary password — will be BCrypt-encoded server-side
   firstName?: string
   lastName?: string
   phoneNumber?: string
   country?: string
+  role?: Role
   isEnabled?: boolean
 }
 
