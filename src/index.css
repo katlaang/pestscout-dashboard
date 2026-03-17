@@ -1,0 +1,204 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --green-50: #f0faf4;
+    --green-100: #d6f0e0;
+    --green-200: #a7dcbc;
+    --green-500: #2d7a50;
+    --green-600: #1e5c3a;
+    --green-700: #164530;
+    --amber-50: #fffbf0;
+    --amber-200: #fde68a;
+    --amber-400: #f59e0b;
+    --amber-500: #d97706;
+    --red-50: #fff5f5;
+    --red-200: #fca5a5;
+    --red-500: #c53030;
+    --red-600: #9b1c1c;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: 'DM Sans', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #111827;
+    background: #f9fafb;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1 { font-size: 1.5rem; font-weight: 500; }
+  h2 { font-size: 1.125rem; font-weight: 500; }
+  h3 { font-size: 0.9375rem; font-weight: 500; }
+}
+
+@layer components {
+  .card {
+    background: #ffffff;
+    border: 0.5px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 1rem 1.125rem;
+  }
+
+  .card-title {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: #374151;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+  }
+
+  .card-action {
+    font-size: 0.75rem;
+    color: #1e5c3a;
+    cursor: pointer;
+    font-weight: 400;
+  }
+  .card-action:hover { text-decoration: underline; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.6875rem;
+    padding: 2px 8px;
+    border-radius: 20px;
+    border: 0.5px solid;
+    font-weight: 400;
+    white-space: nowrap;
+  }
+
+  .badge-green {
+    background: #f0faf4;
+    border-color: #a7dcbc;
+    color: #1e5c3a;
+  }
+
+  .badge-amber {
+    background: #fffbf0;
+    border-color: #fde68a;
+    color: #d97706;
+  }
+
+  .badge-red {
+    background: #fff5f5;
+    border-color: #fca5a5;
+    color: #c53030;
+  }
+
+  .badge-gray {
+    background: #f9fafb;
+    border-color: #e5e7eb;
+    color: #6b7280;
+  }
+
+  .btn-primary {
+    background: #1e5c3a;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .btn-primary:hover { background: #164530; }
+
+  .btn-secondary {
+    background: white;
+    color: #374151;
+    border: 0.5px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 400;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .btn-secondary:hover { background: #f9fafb; }
+
+  .btn-danger {
+    background: #fff5f5;
+    color: #c53030;
+    border: 0.5px solid #fca5a5;
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .btn-danger:hover { background: #fee2e2; }
+
+  .btn-primary:disabled,
+  .btn-secondary:disabled,
+  .btn-danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .input {
+    width: 100%;
+    border: 0.5px solid #d1d5db;
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8125rem;
+    font-family: inherit;
+    color: #111827;
+    background: white;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .input:focus { border-color: #2d7a50; box-shadow: 0 0 0 3px rgba(45,122,80,0.08); }
+  .input::placeholder { color: #9ca3af; }
+
+  /* Heat map cells */
+  .hm-cell {
+    aspect-ratio: 1;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: transform 0.1s, opacity 0.1s;
+    position: relative;
+  }
+  .hm-cell:hover { transform: scale(1.15); z-index: 10; opacity: 0.9; }
+  .hm-zero     { background: #e9f5ee; }
+  .hm-low      { background: #a7dcbc; }
+  .hm-moderate { background: #71c49a; }
+  .hm-high     { background: #f59e0b; }
+  .hm-very-high { background: #e05252; }
+  .hm-emergency { background: #9b1c1c; }
+
+  /* Sidebar nav */
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 0.8125rem;
+    font-weight: 400;
+    color: #6b7280;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+    text-decoration: none;
+  }
+  .nav-item:hover { background: #f0faf4; color: #1e5c3a; }
+  .nav-item.active { background: #f0faf4; color: #1e5c3a; font-weight: 500; }
+  .nav-item svg { flex-shrink: 0; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+}

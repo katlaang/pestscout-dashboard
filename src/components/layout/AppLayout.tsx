@@ -1,0 +1,100 @@
+import { Outlet, useLocation } from 'react-router-dom'
+import Sidebar from './Sidebar'
+import { useAuthStore } from '@/hooks/useAuth'
+
+const PAGE_TITLES: Record<string, string> = {
+  '/':          'Dashboard',
+  '/farms':     'Farms',
+  '/sessions':  'Sessions',
+  '/analytics': 'Analytics',
+  '/heatmap':   'Heat maps',
+  '/alerts':    'Alerts',
+  '/settings':  'Settings',
+  '/admin':     'Super Admin',
+}
+
+export default function AppLayout() {
+  const location = useLocation()
+  const { user } = useAuthStore()
+
+  // Match /sessions/:id
+  const isSessionDetail = /^\/sessions\/.+/.test(location.pathname)
+  const pageTitle = isSessionDetail
+    ? 'Session detail'
+    : PAGE_TITLES[location.pathname] ?? ''
+
+  const initials = [user?.firstName?.[0], user?.lastName?.[0]]
+    .filter(Boolean).join('').toUpperCase() || '?'
+
+  return (
+    <div style={{ display: 'flex', minHeight: '100vh', background: '#f9fafb' }}>
+      <Sidebar />
+
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+
+        {/* Top bar */}
+        <header style={{
+          height: 52,
+          background: '#fff',
+          borderBottom: '0.5px solid #e5e7eb',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 28px',
+          flexShrink: 0,
+          position: 'sticky',
+          top: 0,
+          zIndex: 10,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>
+              {pageTitle}
+            </span>
+            {user?.role === 'SUPER_ADMIN' && (
+              <span style={{
+                fontSize: 9, fontWeight: 700, letterSpacing: '0.6px',
+                background: '#1e5c3a', color: '#fff',
+                padding: '1px 6px', borderRadius: 20,
+              }}>
+                SUPER ADMIN
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {/* Role badge */}
+            <span style={{
+              fontSize: 10, color: '#9ca3af',
+              background: '#f9fafb',
+              border: '0.5px solid #e5e7eb',
+              borderRadius: 20, padding: '2px 8px',
+            }}>
+              {user?.role?.replace('_', ' ').toLowerCase()}
+            </span>
+
+            {/* Avatar */}
+            <div style={{
+              width: 28, height: 28, borderRadius: '50%',
+              background: '#f0faf4',
+              border: '0.5px solid #a7dcbc',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 10, fontWeight: 600, color: '#1e5c3a',
+              flexShrink: 0,
+            }}>
+              {initials}
+            </div>
+
+            {/* Name */}
+            <span style={{ fontSize: 12, color: '#374151' }}>
+              {user?.firstName} {user?.lastName}
+            </span>
+          </div>
+        </header>
+
+        <main style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  )
+}
