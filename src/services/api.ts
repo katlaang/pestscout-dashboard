@@ -17,6 +17,7 @@ import type {
   CreateFieldBlockRequest, UpdateFieldBlockRequest, FieldBlockResponse,
   FarmMemberResponse,
   CacheInfo,
+  ScoutingSessionAuditDto,
 } from '@/types'
 
 // ─── Axios instance ───────────────────────────────────────────────────────────
@@ -148,9 +149,9 @@ export interface SessionTargetRequest {
 /** POST /api/scouting/sessions — manager creates, must supply scoutId + targets */
 export interface CreateSessionRequest {
   farmId: string
-  scoutId: string                 // required — must be a SCOUT role user
-  targets: SessionTargetRequest[] // required — at least one greenhouse or field-block
-  sessionDate: string             // ISO local date
+  scoutId?: string                 // optional — backend falls back to farm scout
+  targets?: SessionTargetRequest[] // optional — backend auto-resolves all structures
+  sessionDate: string              // ISO local date
   weekNumber?: number
   crop?: string
   variety?: string
@@ -195,6 +196,13 @@ export interface UpdateSessionRequest {
   actorName?: string
 }
 
+/** POST /api/scouting/sessions/{id}/remote-start-request — SUPER_ADMIN notifies scout to start */
+export interface RemoteStartRequestBody {
+  version: number
+  actorName: string
+  comment?: string
+}
+
 export const sessionsApi = {
   list: (farmId: string) =>
     api.get<ScoutingSessionDetailDto[]>('/api/scouting/sessions', {
@@ -210,23 +218,49 @@ export const sessionsApi = {
   update: (sessionId: string, body: UpdateSessionRequest) =>
     api.put<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}`, body).then(r => r.data),
 
-  /** SCOUT or manager — moves to IN_PROGRESS */
+  /**
+   * SCOUT direct start. Always available to the assigned scout regardless of whether
+   * a remote-start was requested. Scout can ignore a pending remote-start and call this directly.
+   * POST /api/scouting/sessions/{id}/start
+   */
   start: (sessionId: string) =>
     api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/start`).then(r => r.data),
 
-  /** SCOUT submits for manager review — requires version + actorName */
+  /**
+   * SUPER_ADMIN informs the scout that the session should be started.
+   * Informational only — scout may ignore it and start independently.
+   * POST /api/scouting/sessions/{id}/remote-start-request
+   */
+  remoteStartRequest: (sessionId: string, body: RemoteStartRequestBody) =>
+    api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/remote-start-request`, body).then(r => r.data),
+
+  /**
+   * SCOUT submits session for manager review.
+   * Requires confirmationAcknowledged: true + actorName (for audit trail).
+   * POST /api/scouting/sessions/{id}/submit
+   */
   submit: (sessionId: string, body: SubmitSessionRequest) =>
     api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/submit`, body).then(r => r.data),
 
-  /** Manager approves — requires version + actorName */
+  /**
+   * SCOUT completes session — locks it. Requires confirmationAcknowledged: true + actorName.
+   * Must be preceded by a warning modal in the UI.
+   * POST /api/scouting/sessions/{id}/complete
+   */
   complete: (sessionId: string, body: CompleteSessionRequest) =>
     api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/complete`, body).then(r => r.data),
 
+  /**
+   * SUPER_ADMIN / FARM_ADMIN / MANAGER reopen a COMPLETED session.
+   * Recorded in audit trail with actorName + comment.
+   * POST /api/scouting/sessions/{id}/reopen
+   */
   reopen: (sessionId: string, body?: ReopenSessionRequest) =>
     api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/reopen`, body ?? {}).then(r => r.data),
 
-  audits: (sessionId: string) =>
-    api.get(`/api/scouting/sessions/${sessionId}/audits`).then(r => r.data),
+  /** GET /api/scouting/sessions/{id}/audits — returns ordered audit trail */
+  audits: (sessionId: string): Promise<ScoutingSessionAuditDto[]> =>
+    api.get<ScoutingSessionAuditDto[]>(`/api/scouting/sessions/${sessionId}/audits`).then(r => r.data),
 }
 
 // ─── Analytics ────────────────────────────────────────────────────────────────

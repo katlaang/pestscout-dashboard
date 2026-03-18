@@ -140,7 +140,7 @@ export interface ScoutingSessionDetailDto {
   status: SessionStatus
   syncStatus: SyncStatus
   managerId?: string
-  scoutId?: string
+  scoutId?: string | null
   crop?: string
   variety?: string
   temperatureCelsius?: number
@@ -533,4 +533,33 @@ export interface ErrorResponse {
   message: string
   path: string
   details?: string[]
+}
+
+// ─── Session Audit ────────────────────────────────────────────────────────────
+
+export type SessionAuditAction =
+  | 'SESSION_CREATED'
+  | 'SESSION_VIEWED'
+  | 'SESSION_EDITED'
+  | 'SESSION_REMOTE_START_REQUESTED'
+  | 'SESSION_STARTED'
+  | 'SESSION_SUBMITTED'
+  | 'SESSION_COMPLETED'
+  | 'SESSION_REOPENED'
+  | 'SESSION_MARKED_INCOMPLETE'
+
+export interface ScoutingSessionAuditDto {
+  id: string
+  sessionId: string
+  action: SessionAuditAction
+  actorId?: string
+  actorName?: string
+  actorEmail?: string
+  actorRole?: string
+  deviceId?: string
+  deviceType?: string
+  location?: string
+  comment?: string
+  occurredAt: string
+  syncStatus?: string
 }

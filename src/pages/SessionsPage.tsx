@@ -6,29 +6,83 @@ import type { CreateSessionRequest, SessionTargetRequest } from '@/services/api'
 import { SESSION_STATUS_BADGE, formatDate, exportToCsv, currentWeek } from '@/utils'
 import { useAuthStore } from '@/hooks/useAuth'
 
-const STATUS_FILTERS: { value: SessionStatus | 'ALL'; label: string }[] = [
-  { value: 'ALL',         label: 'All' },
-  { value: 'IN_PROGRESS', label: 'In progress' },
-  { value: 'SUBMITTED',   label: 'Submitted' },
-  { value: 'COMPLETED',   label: 'Completed' },
-  { value: 'DRAFT',       label: 'Draft' },
-]
+// ─── Visibility rules ─────────────────────────────────────────────────────────
+//
+// SUPER_ADMIN (per-farm view):  DRAFT, NEW, COMPLETED, INCOMPLETE, REOPENED
+//                               (NOT IN_PROGRESS or SUBMITTED — scout is actively working those)
+// FARM_ADMIN / MANAGER:         ALL statuses on their farm
+// SCOUT (own sessions only):    NEW, IN_PROGRESS, SUBMITTED, REOPENED, INCOMPLETE, COMPLETED
+//                               + DRAFT only when a remote-start is pending
+
+function isVisibleToRole(s: ScoutingSessionDetailDto, role: string, userId: string): boolean {
+  const SUPER_ADMIN_STATUSES = new Set(['DRAFT', 'NEW', 'COMPLETED', 'INCOMPLETE', 'REOPENED'])
+  const SCOUT_STATUSES       = new Set(['NEW', 'IN_PROGRESS', 'SUBMITTED', 'REOPENED', 'INCOMPLETE', 'COMPLETED'])
+
+  if (role === 'SUPER_ADMIN') {
+    return SUPER_ADMIN_STATUSES.has(s.status)
+  }
+  if (role === 'SCOUT') {
+    // Scout only sees their own sessions
+    if (s.scoutId !== userId) return false
+    // DRAFT visible only if a remote-start is pending
+    if (s.status === 'DRAFT') return !!(s as any).remoteStartConsentRequired
+    return SCOUT_STATUSES.has(s.status)
+  }
+  // FARM_ADMIN / MANAGER see everything on their farm
+  return true
+}
+
+// Status filter options per role
+function statusFiltersForRole(role: string): { value: SessionStatus | 'ALL'; label: string }[] {
+  if (role === 'SCOUT') {
+    return [
+      { value: 'ALL',         label: 'All mine' },
+      { value: 'IN_PROGRESS', label: 'In progress' },
+      { value: 'SUBMITTED',   label: 'Submitted' },
+      { value: 'REOPENED',    label: 'Reopened' },
+      { value: 'INCOMPLETE',  label: 'Incomplete' },
+      { value: 'COMPLETED',   label: 'Completed' },
+    ]
+  }
+  if (role === 'SUPER_ADMIN') {
+    return [
+      { value: 'ALL',        label: 'All' },
+      { value: 'DRAFT',      label: 'Draft' },
+      { value: 'NEW',        label: 'New' },
+      { value: 'REOPENED',   label: 'Reopened' },
+      { value: 'COMPLETED',  label: 'Completed' },
+      { value: 'INCOMPLETE', label: 'Incomplete' },
+    ]
+  }
+  // FARM_ADMIN / MANAGER
+  return [
+    { value: 'ALL',         label: 'All' },
+    { value: 'DRAFT',       label: 'Draft' },
+    { value: 'NEW',         label: 'New' },
+    { value: 'IN_PROGRESS', label: 'In progress' },
+    { value: 'SUBMITTED',   label: 'Submitted' },
+    { value: 'REOPENED',    label: 'Reopened' },
+    { value: 'COMPLETED',   label: 'Completed' },
+    { value: 'INCOMPLETE',  label: 'Incomplete' },
+  ]
+}
 
 const CAN_CREATE_SESSION = ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER']
 
 export default function SessionsPage() {
   const navigate = useNavigate()
   const { user } = useAuthStore()
-  const canCreate = CAN_CREATE_SESSION.includes(user?.role ?? '')
+  const role     = user?.role ?? ''
+  const canCreate = CAN_CREATE_SESSION.includes(role)
 
-  const [farms, setFarms] = useState<FarmResponse[]>([])
+  const [farms,          setFarms]          = useState<FarmResponse[]>([])
   const [selectedFarmId, setSelectedFarmId] = useState('')
-  const [sessions, setSessions] = useState<ScoutingSessionDetailDto[]>([])
-  const [statusFilter, setStatusFilter] = useState<SessionStatus | 'ALL'>('ALL')
-  const [search, setSearch] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [showCreate, setShowCreate] = useState(false)
-  const [banner, setBanner] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
+  const [sessions,       setSessions]       = useState<ScoutingSessionDetailDto[]>([])
+  const [statusFilter,   setStatusFilter]   = useState<SessionStatus | 'ALL'>('ALL')
+  const [search,         setSearch]         = useState('')
+  const [loading,        setLoading]        = useState(true)
+  const [showCreate,     setShowCreate]     = useState(false)
+  const [banner,         setBanner]         = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
 
   useEffect(() => {
     farmsApi.list().then(data => {
@@ -43,7 +97,10 @@ export default function SessionsPage() {
     sessionsApi.list(selectedFarmId).then(setSessions).finally(() => setLoading(false))
   }, [selectedFarmId])
 
+  const statusFilters = statusFiltersForRole(role)
+
   const filtered = sessions.filter(s => {
+    if (!isVisibleToRole(s, role, user?.id ?? '')) return false
     const matchStatus = statusFilter === 'ALL' || s.status === statusFilter
     const matchSearch = !search ||
       s.crop?.toLowerCase().includes(search.toLowerCase()) ||
@@ -63,7 +120,13 @@ export default function SessionsPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h1 style={{ color: '#111827', marginBottom: 4 }}>Sessions</h1>
-          <p style={{ fontSize: 13, color: '#6b7280' }}>All scouting sessions across your farms</p>
+          <p style={{ fontSize: 13, color: '#6b7280' }}>
+            {role === 'SCOUT'
+              ? 'Your assigned scouting sessions'
+              : role === 'SUPER_ADMIN'
+              ? 'Sessions visible to management per farm'
+              : 'All scouting sessions on your farm'}
+          </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn-secondary" style={{ fontSize: 12 }}
@@ -77,7 +140,6 @@ export default function SessionsPage() {
             }}>
             ↓ Export CSV
           </button>
-          {/* Only SUPER_ADMIN, FARM_ADMIN, MANAGER can create sessions */}
           {canCreate && (
             <button className="btn-primary" style={{ fontSize: 12 }}
               onClick={() => setShowCreate(true)}>
@@ -94,18 +156,26 @@ export default function SessionsPage() {
           ...(banner.type === 'error'
             ? { background: '#fff5f5', border: '0.5px solid #fca5a5', color: '#c53030' }
             : { background: '#f0faf4', border: '0.5px solid #a7dcbc', color: '#1e5c3a' })
-        }}>
-          {banner.msg}
-        </div>
+        }}>{banner.msg}</div>
       )}
 
       {/* Scout read-only notice */}
-      {!canCreate && (
+      {role === 'SCOUT' && (
         <div style={{
           marginBottom: 16, padding: '10px 14px', borderRadius: 8, fontSize: 12,
           background: '#f9fafb', border: '0.5px solid #e5e7eb', color: '#6b7280',
         }}>
-          Sessions are created by managers. Scouts record observations within an assigned session using the mobile app.
+          Sessions are created by managers. Record observations in the mobile app once a session is started.
+        </div>
+      )}
+
+      {/* Super admin visibility note */}
+      {role === 'SUPER_ADMIN' && (
+        <div style={{
+          marginBottom: 16, padding: '10px 14px', borderRadius: 8, fontSize: 12,
+          background: '#f0f9ff', border: '0.5px solid #bae6fd', color: '#0369a1',
+        }}>
+          Showing management-visible sessions (Draft, New, Completed, Incomplete, Reopened). In-progress and submitted sessions are managed by the assigned scout.
         </div>
       )}
 
@@ -134,7 +204,7 @@ export default function SessionsPage() {
         <input className="input" style={{ width: 200 }} placeholder="Search by crop or ID…"
           value={search} onChange={e => setSearch(e.target.value)} />
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {STATUS_FILTERS.map(f => (
+          {statusFilters.map(f => (
             <button key={f.value} onClick={() => setStatusFilter(f.value)}
               style={{
                 padding: '5px 12px', borderRadius: 20, border: '0.5px solid',
@@ -170,24 +240,36 @@ export default function SessionsPage() {
             </thead>
             <tbody>
               {filtered.map(s => {
-                const badge = SESSION_STATUS_BADGE[s.status]
+                const badge    = SESSION_STATUS_BADGE[s.status]
                 const totalObs = s.sections.reduce((acc, sec) => acc + sec.observations.filter(o => !o.deleted).length, 0)
+                const remoteStart = !!(s as any).remoteStartConsentRequired
                 return (
                   <tr key={s.id} onClick={() => navigate(`/sessions/${s.id}`)}
                     style={{ borderBottom: '0.5px solid #f3f4f6', cursor: 'pointer' }}
                     onMouseEnter={e => e.currentTarget.style.background = '#f9fafb'}
                     onMouseLeave={e => e.currentTarget.style.background = ''}>
-                    <td style={{ padding: '10px 14px' }}>
-                      <span style={{ fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#374151' }}>{s.id.slice(0, 12)}…</span>
+                    <td style={{ padding: '10px 14px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#9ca3af' }}>
+                      {s.id.slice(0, 8)}…
                     </td>
-                    <td style={{ padding: '10px 14px', color: '#374151' }}>{formatDate(s.sessionDate)}</td>
-                    <td style={{ padding: '10px 14px', color: '#374151' }}>W{s.weekNumber}</td>
-                    <td style={{ padding: '10px 14px', fontWeight: 500, color: '#111827' }}>
-                      {s.crop ?? '—'}{s.variety ? ` · ${s.variety}` : ''}
-                    </td>
-                    <td style={{ padding: '10px 14px', color: '#374151', fontFamily: 'DM Mono, monospace' }}>{totalObs}</td>
+                    <td style={{ padding: '10px 14px' }}>{formatDate(s.sessionDate)}</td>
+                    <td style={{ padding: '10px 14px', fontWeight: 500 }}>W{s.weekNumber}</td>
                     <td style={{ padding: '10px 14px' }}>
-                      <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                      <span style={{ color: '#111827' }}>{s.crop ?? '—'}</span>
+                      {s.variety && <span style={{ color: '#9ca3af', marginLeft: 6 }}>{s.variety}</span>}
+                    </td>
+                    <td style={{ padding: '10px 14px', color: totalObs > 0 ? '#111827' : '#9ca3af' }}>
+                      {totalObs}
+                    </td>
+                    <td style={{ padding: '10px 14px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span className={`badge ${badge?.cls ?? 'badge-gray'}`}>{badge?.label ?? s.status}</span>
+                        {/* Remote-start pending badge — visible to scout */}
+                        {remoteStart && role === 'SCOUT' && (
+                          <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 20, background: '#f59e0b', color: '#fff' }}>
+                            📡 start requested
+                          </span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 )
@@ -200,9 +282,13 @@ export default function SessionsPage() {
   )
 }
 
-// ─── Create Session Modal ─────────────────────────────────────────────────────
+// ─── Create session modal ─────────────────────────────────────────────────────
+// scoutId and targets are now optional in the backend — but we encourage the
+// manager to fill them in up front for a better experience.
 
-function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError }: {
+function CreateSessionModal({
+  farms, defaultFarmId, onCreated, onCancel, onError,
+}: {
   farms: FarmResponse[]
   defaultFarmId: string
   onCreated: (s: ScoutingSessionDetailDto) => void
@@ -210,35 +296,30 @@ function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError
   onError: (msg: string) => void
 }) {
   const { week } = currentWeek()
-  const [saving, setSaving] = useState(false)
-  const [farmId, setFarmId] = useState(defaultFarmId)
-  const [scouts, setScouts] = useState<UserDto[]>([])
-  const [structures, setStructures] = useState<(GreenhouseResponse | FieldBlockResponse)[]>([])
+  const [saving,           setSaving]           = useState(false)
+  const [farmId,           setFarmId]           = useState(defaultFarmId)
+  const [scouts,           setScouts]           = useState<UserDto[]>([])
+  const [structures,       setStructures]       = useState<(GreenhouseResponse | FieldBlockResponse)[]>([])
   const [selectedTargetId, setSelectedTargetId] = useState('')
-  const [scoutId, setScoutId] = useState('')
-  const [crop, setCrop] = useState('')
-  const [variety, setVariety] = useState('')
-  const [notes, setNotes] = useState('')
-  const [sessionDate, setSessionDate] = useState(new Date().toISOString().slice(0, 10))
-  const [weekNumber, setWeekNumber] = useState(week)
+  const [scoutId,          setScoutId]          = useState('')
+  const [crop,             setCrop]             = useState('')
+  const [variety,          setVariety]          = useState('')
+  const [notes,            setNotes]            = useState('')
+  const [sessionDate,      setSessionDate]      = useState(new Date().toISOString().slice(0, 10))
+  const [weekNumber,       setWeekNumber]       = useState(week)
 
   const selectedFarm = farms.find(f => f.id === farmId)
-  const isField = selectedFarm?.structureType === 'FIELD'
+  const isField      = selectedFarm?.structureType === 'FIELD'
 
-  // Load scouts for this farm
   useEffect(() => {
     if (!farmId) return
     adminUsersApi.list({ farmId, role: 'SCOUT' })
-      .then(setScouts)
-      .catch(() => setScouts([]))
+      .then(setScouts).catch(() => setScouts([]))
   }, [farmId])
 
-  // Load structures when farm changes
   useEffect(() => {
     if (!farmId || selectedFarm?.structureType === 'OTHER') { setStructures([]); return }
-    const fetch = isField
-      ? adminFarmsApi.listFieldBlocks(farmId)
-      : adminFarmsApi.listGreenhouses(farmId)
+    const fetch = isField ? adminFarmsApi.listFieldBlocks(farmId) : adminFarmsApi.listGreenhouses(farmId)
     fetch.then(data => setStructures(data as any[])).catch(() => setStructures([]))
     setSelectedTargetId('')
   }, [farmId, isField, selectedFarm?.structureType])
@@ -251,37 +332,23 @@ function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError
 
   async function handleCreate() {
     if (!farmId) { onError('Please select a farm'); return }
-    if (!scoutId) { onError('Please assign a scout to this session'); return }
-    if (!selectedTargetId && structures.length > 0) { onError('Please select a greenhouse or field block'); return }
-    if (structures.length === 0 && selectedFarm?.structureType !== 'OTHER') {
-      onError('No structures found on this farm. Add a greenhouse or field block first.'); return
-    }
 
-    // Build targets list
-    const targets: SessionTargetRequest[] = selectedTargetId
-      ? [{
-          ...(isField ? { fieldBlockId: selectedTargetId } : { greenhouseId: selectedTargetId }),
-          includeAllBays: true,
-          includeAllBenches: true,
-        }]
-      : [] // OTHER farms — no structure required but backend needs at least one target
-            // if no structures, we cannot create a session
-
-    if (targets.length === 0) {
-      onError('Cannot create a session: no structure selected.'); return
-    }
+    // Build targets — optional but strongly encouraged
+    const targets: SessionTargetRequest[] | undefined = selectedTargetId
+      ? [{ ...(isField ? { fieldBlockId: selectedTargetId } : { greenhouseId: selectedTargetId }), includeAllBays: true, includeAllBenches: true }]
+      : undefined   // backend will auto-resolve all structures on the farm
 
     setSaving(true)
     try {
       const body: CreateSessionRequest = {
         farmId,
-        scoutId,
-        targets,
+        scoutId:    scoutId     || undefined,  // optional — assign later if needed
+        targets,                                // optional — backend resolves defaults
         sessionDate,
         weekNumber,
-        crop: crop || undefined,
+        crop:    crop    || undefined,
         variety: variety || undefined,
-        notes: notes || undefined,
+        notes:   notes   || undefined,
       }
       onCreated(await sessionsApi.create(body))
     } catch (e: any) {
@@ -315,29 +382,27 @@ function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError
             </select>
           </Field>
 
-          {/* Scout — required */}
-          <Field label="Assign scout *">
+          {/* Scout — optional (can be assigned later) */}
+          <Field label="Assign scout">
             {scouts.length === 0 ? (
               <div style={{ padding: '8px 10px', background: '#fffbf0', border: '0.5px solid #fde68a', borderRadius: 7, fontSize: 12, color: '#d97706' }}>
-                No scouts assigned to this farm yet. Create a SCOUT user and assign them to this farm first.
+                No scouts on this farm yet — you can assign one after creation.
               </div>
             ) : (
               <select className="input" value={scoutId} onChange={e => setScoutId(e.target.value)}>
-                <option value="">— Select scout —</option>
+                <option value="">— Assign later —</option>
                 {scouts.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.firstName} {s.lastName} ({s.email})
-                  </option>
+                  <option key={s.id} value={s.id}>{s.firstName} {s.lastName} ({s.email})</option>
                 ))}
               </select>
             )}
           </Field>
 
-          {/* Structure target — greenhouse or field block */}
+          {/* Structure target — optional */}
           {structures.length > 0 && (
-            <Field label={`${isField ? 'Field block' : 'Greenhouse'} *`}>
+            <Field label={`${isField ? 'Field block' : 'Greenhouse'} (optional — backend defaults to all)`}>
               <select className="input" value={selectedTargetId} onChange={e => setSelectedTargetId(e.target.value)}>
-                <option value="">— Select {isField ? 'field block' : 'greenhouse'} —</option>
+                <option value="">— All structures on this farm —</option>
                 {structures.map(s => (
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
@@ -368,12 +433,12 @@ function CreateSessionModal({ farms, defaultFarmId, onCreated, onCancel, onError
         </div>
 
         <div style={{ marginTop: 14, padding: '8px 12px', borderRadius: 7, background: '#f0faf4', border: '0.5px solid #a7dcbc', fontSize: 12, color: '#1e5c3a' }}>
-          The assigned scout will see this session in the mobile app and can start and submit it. Managers approve the session here.
+          The assigned scout starts and records observations via the mobile app. Managers can reopen completed sessions if corrections are needed.
         </div>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
           <button className="btn-secondary" onClick={onCancel}>Cancel</button>
-          <button className="btn-primary" onClick={handleCreate} disabled={saving || scouts.length === 0}>
+          <button className="btn-primary" onClick={handleCreate} disabled={saving}>
             {saving ? 'Creating…' : 'Create session'}
           </button>
         </div>
