@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { sessionsApi, adminUsersApi, adminFarmsApi } from '@/services/api'
-import ObservationGrid from '@/components/scouting/ObservationGrid'
+import ObservationGrid, { type ObservationGridHandle } from '@/components/scouting/ObservationGrid'
 import SessionPlannerFields, { type SessionPlannerTargetDraft } from '@/components/scouting/SessionPlannerFields'
 import ConfirmModal from '@/components/common/ConfirmModal'
 import type {
@@ -64,11 +64,11 @@ export default function SessionDetailPage() {
 
   // Modals
   const [showCompleteWarn, setShowCompleteWarn] = useState(false)
-  const [showSubmitWarn,   setShowSubmitWarn]   = useState(false)
   const [showReopenModal,  setShowReopenModal]  = useState(false)
   const [showRemoteModal,  setShowRemoteModal]  = useState(false)
   const [showAuditTrail,   setShowAuditTrail]   = useState(false)
   const [showDeleteModal,  setShowDeleteModal]  = useState(false)
+  const observationGridRefs = useRef<Record<string, ObservationGridHandle | null>>({})
 
   const role      = user?.role ?? ''
   const isScout   = role === 'SCOUT'
@@ -203,27 +203,19 @@ export default function SessionDetailPage() {
     } finally { setActionLoading(false) }
   }
 
-  async function handleSubmit(comment: string) {
-    if (!sessionId || !session) return
-    setActionLoading(true)
-    try {
-      setSession(await sessionsApi.submit(sessionId, {
-        version: session.version, confirmationAcknowledged: true,
-        actorName: myName, comment: comment || undefined,
-      }))
-      flash('Session submitted for manager review')
-      setShowSubmitWarn(false)
-    } catch (e: any) {
-      flash(e?.response?.data?.message ?? 'Failed to submit session', 'error')
-    } finally { setActionLoading(false) }
-  }
-
   async function handleComplete(comment: string) {
     if (!sessionId || !session) return
     setActionLoading(true)
     try {
+      for (const section of session.sections) {
+        await observationGridRefs.current[section.targetId]?.flushPendingChanges()
+      }
+
+      const latestSession = await sessionsApi.get(sessionId)
+      setSession(latestSession)
+
       setSession(await sessionsApi.complete(sessionId, {
-        version: session.version, confirmationAcknowledged: true,
+        version: latestSession.version, confirmationAcknowledged: true,
         actorName: myName, comment: comment || undefined,
       }))
       flash('Session completed and locked')
@@ -360,7 +352,6 @@ export default function SessionDetailPage() {
   //
   // SCOUT only (assigned to this session):
   const canStart    = isAssignedScout && STARTABLE.includes(session.status)
-  const canSubmit   = isAssignedScout && ['NEW', 'IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
   const canComplete = isAssignedScout && ['IN_PROGRESS', 'SUBMITTED', 'REOPENED', 'INCOMPLETE'].includes(session.status)
 
   // MANAGER / FARM_ADMIN / SUPER_ADMIN — reopen is COMPLETED only (per reopenSession service)
@@ -368,6 +359,50 @@ export default function SessionDetailPage() {
   const canEditWeather =
     (isAssignedScout && ['NEW', 'IN_PROGRESS', 'REOPENED', 'INCOMPLETE', 'SUBMITTED'].includes(session.status)) ||
     (canManagePlanner && plannerEditing)
+  const canSeeAuditTrail = !isScout
+  const parsedWeatherTemp = weatherTemp.trim() === '' ? null : Number(weatherTemp)
+  const parsedWeatherRh = weatherRh.trim() === '' ? null : Number(weatherRh)
+  const weatherHasValues =
+    weatherTemp.trim() !== '' ||
+    weatherRh.trim() !== '' ||
+    weatherTime.trim() !== '' ||
+    weatherNotes.trim() !== ''
+  const weatherDirty =
+    (parsedWeatherTemp ?? null) !== (session.temperatureCelsius ?? null) ||
+    (parsedWeatherRh ?? null) !== (session.relativeHumidityPercent ?? null) ||
+    weatherTime !== (session.observationTime ?? '') ||
+    weatherNotes.trim() !== (session.weatherNotes ?? '').trim()
+  const weatherPanelTone = weatherSaving
+    ? {
+        background: '#eff6ff',
+        border: '0.5px solid #93c5fd',
+        title: '#1d4ed8',
+        body: '#1e40af',
+        hint: 'Saving weather values...',
+      }
+    : weatherDirty
+    ? {
+        background: '#fffbeb',
+        border: '0.5px solid #fde68a',
+        title: '#92400e',
+        body: '#92400e',
+        hint: 'Weather changes are not saved yet.',
+      }
+    : weatherHasValues
+    ? {
+        background: '#f0faf4',
+        border: '0.5px solid #a7dcbc',
+        title: '#1e5c3a',
+        body: '#1e5c3a',
+        hint: 'Weather values are saved.',
+      }
+    : {
+        background: '#ffffff',
+        border: '0.5px solid #e5e7eb',
+        title: '#374151',
+        body: '#6b7280',
+        hint: 'Enter the weather values manually for now.',
+      }
 
   // SUPER_ADMIN can request remote start on startable sessions with an assigned scout
   const canRequestRemoteStart =
@@ -556,24 +591,16 @@ export default function SessionDetailPage() {
         {/* ── Action buttons ── */}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
 
-          <button className="btn-secondary" style={{ fontSize: 12 }}
+          {canSeeAuditTrail && <button className="btn-secondary" style={{ fontSize: 12 }}
             onClick={() => setShowAuditTrail(v => !v)}>
             {showAuditTrail ? 'Hide trail' : '📋 Audit trail'}
-          </button>
+          </button>}
 
           {/* SCOUT: Start */}
           {canStart && (
             <button className="btn-primary" style={{ fontSize: 12 }} disabled={actionLoading}
               onClick={handleStart}>
               {actionLoading ? 'Starting…' : '▶ Start session'}
-            </button>
-          )}
-
-          {/* SCOUT: Submit for review */}
-          {canSubmit && !canStart && (
-            <button className="btn-secondary" style={{ fontSize: 12 }} disabled={actionLoading}
-              onClick={() => setShowSubmitWarn(true)}>
-              Submit for review
             </button>
           )}
 
@@ -635,7 +662,7 @@ export default function SessionDetailPage() {
       </div>
 
       {/* ── Audit trail panel ── */}
-      {showAuditTrail && <AuditTrailPanel audits={audits} />}
+      {canSeeAuditTrail && showAuditTrail && <AuditTrailPanel audits={audits} />}
 
       {/* ── Metadata grid ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12, marginBottom: 24 }}>
@@ -668,15 +695,15 @@ export default function SessionDetailPage() {
 
       {/* Weather */}
       {(canEditWeather || session.temperatureCelsius != null || session.relativeHumidityPercent != null || session.observationTime || session.weatherNotes) && (
-        <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card" style={{ marginBottom: 20, background: weatherPanelTone.background, border: weatherPanelTone.border }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
             <div>
-              <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 4 }}>Weather</p>
-              <p style={{ fontSize: 11, color: '#9ca3af' }}>Enter the weather values manually for now.</p>
+              <p style={{ fontSize: 11, fontWeight: 500, color: weatherPanelTone.title, marginBottom: 4 }}>Weather</p>
+              <p style={{ fontSize: 11, color: weatherPanelTone.body }}>{weatherPanelTone.hint}</p>
             </div>
             {canEditWeather && (
-              <button className="btn-secondary" style={{ fontSize: 12 }} disabled={weatherSaving} onClick={handleSaveWeather}>
-                {weatherSaving ? 'Saving...' : 'Save weather'}
+              <button className="btn-secondary" style={{ fontSize: 12 }} disabled={weatherSaving || !weatherDirty} onClick={handleSaveWeather}>
+                {weatherSaving ? 'Saving...' : weatherDirty ? 'Save weather' : weatherHasValues ? 'Saved' : 'Save weather'}
               </button>
             )}
           </div>
@@ -714,7 +741,7 @@ export default function SessionDetailPage() {
       {/* Sections / Observations */}
       {session.sections.map(section => {
         const sectionObs = section.observations.filter(o => !o.deleted)
-        const isEditable = isAssignedScout && ['IN_PROGRESS', 'REOPENED'].includes(session.status)
+        const isEditable = isAssignedScout && ['IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
         return (
           <div key={section.targetId} className="card" style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -749,13 +776,15 @@ export default function SessionDetailPage() {
               </div>
             )}
             <ObservationGrid
+              ref={grid => {
+                observationGridRefs.current[section.targetId] = grid
+              }}
               section={section}
               sessionId={sessionId!}
               isEditable={isEditable}
               farmId={session.farmId}
               surveySpeciesCodes={session.surveySpeciesCodes}
               customSurveySpeciesIds={session.customSurveySpeciesIds}
-              onChanged={() => sessionsApi.get(sessionId!).then(setSession).catch(() => {})}
             />
           </div>
         )
@@ -791,19 +820,6 @@ export default function SessionDetailPage() {
           onCancel={() => setShowDeleteModal(false)}
           loading={deleteLoading}
           tone="danger"
-        />
-      )}
-
-      {showSubmitWarn && (
-        <WarningModal
-          title="Submit session for review?"
-          warning="Once submitted, you cannot edit observations unless a manager reopens the session."
-          confirmLabel="Submit for review"
-          confirmColor="#2563eb"
-          onConfirm={handleSubmit}
-          onCancel={() => setShowSubmitWarn(false)}
-          loading={actionLoading}
-          commentPlaceholder="Optional note for the manager"
         />
       )}
 

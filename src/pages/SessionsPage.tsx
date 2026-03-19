@@ -98,14 +98,8 @@ export default function SessionsPage() {
       const farmId = user?.farmId
       if (!farmId) return
 
-      farmsApi.get(farmId)
-        .then(farm => {
-          setFarms([farm])
-          setSelectedFarmId(farm.id)
-        })
-        .catch(() => {
-          setSelectedFarmId(farmId)
-        })
+      setFarms([])
+      setSelectedFarmId(farmId)
       return
     }
 
@@ -808,7 +802,7 @@ function CreateSessionModal({
             color: '#1e5c3a',
           }}
         >
-          The assigned scout starts and records observations through the mobile app.
+          The assigned scout starts and records observations through the scout interface on web, tablet, or mobile.
         </div>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>

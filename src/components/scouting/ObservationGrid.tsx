@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react'
 import CustomSpeciesModal from '@/components/scouting/CustomSpeciesModal'
 import { adminFarmsApi, customSpeciesApi, observationsApi } from '@/services/api'
 import type {
   CustomSpecies,
   ObservationCategory,
+  CreateObservationRequest,
   ScoutingObservationDto,
   ScoutingSessionSectionDto,
   SpeciesCode,
   GreenhouseResponse,
+  FieldBlockResponse,
 } from '@/types'
 import { mergeCustomSpecies } from '@/utils/customSpecies'
 
@@ -53,11 +55,20 @@ const OTHER_ACTION_LABEL: Record<ObservationCategory, string> = {
 
 function countColor(n: number | null, category: ObservationCategory): { bg: string; fg: string } {
   if (n === null) return { bg: '#ffffff', fg: '#111827' }
-  if (category === 'BENEFICIAL') return { bg: '#70ad47', fg: '#111827' }
+  if (category === 'BENEFICIAL' && n === 0) return { bg: '#111827', fg: '#ffffff' }
+  if (category === 'BENEFICIAL') return { bg: '#70ad47', fg: '#14532d' }
   if (n === 0) return { bg: '#70ad47', fg: '#111827' }
   if (n <= 9) return { bg: '#ffff00', fg: '#111827' }
   if (n <= 29) return { bg: '#ffc000', fg: '#111827' }
   return { bg: '#ff0000', fg: '#111827' }
+}
+
+function columnMinWidth(col: GridColumn): number {
+  if (col.kind === 'custom') {
+    return Math.max(112, Math.min(180, col.label.length * 8))
+  }
+
+  return Math.max(58, col.label.length * 9)
 }
 
 function columnKeyForObservation(observation: ScoutingObservationDto) {
@@ -70,6 +81,18 @@ function obsKey(bayIndex: number, benchIndex: number, columnKey: string) {
   return `${bayIndex}:${benchIndex}:${columnKey}`
 }
 
+function parseCountValue(value: string): number | null {
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  const parsed = Number.parseInt(trimmed, 10)
+  if (Number.isNaN(parsed) || parsed < 0) return null
+  return parsed
+}
+
+function rowKey(bayIndex: number, benchIndex: number) {
+  return `${bayIndex}:${benchIndex}`
+}
+
 interface GridRow {
   bayIndex: number
   bayTag: string
@@ -78,19 +101,69 @@ interface GridRow {
   rowSpan?: number
 }
 
+function uniqueOrderedStrings(values: Array<string | undefined | null>): string[] {
+  const seen = new Set<string>()
+  const ordered: string[] = []
+
+  values.forEach(value => {
+    const normalized = typeof value === 'string' ? value.trim() : ''
+    if (!normalized || seen.has(normalized)) return
+    seen.add(normalized)
+    ordered.push(normalized)
+  })
+
+  return ordered
+}
+
+function inferFallbackBedTags(
+  section: ScoutingSessionSectionDto,
+  greenhouse: GreenhouseResponse | null,
+  fieldBlock: FieldBlockResponse | null,
+  totalBayCount: number,
+): string[] {
+  const explicitBeds =
+    section.includeAllBenches === false
+      ? uniqueOrderedStrings(section.benchTags ?? [])
+      : []
+
+  if (explicitBeds.length > 0) return explicitBeds
+
+  const greenhouseBeds = uniqueOrderedStrings(greenhouse?.benchTags ?? [])
+  if (greenhouseBeds.length > 0) return greenhouseBeds
+
+  const bedsPerBayFromCoverage =
+    (section.coverage?.totalBays ?? 0) > 0 && (section.coverage?.totalBeds ?? 0) > 0
+      ? Math.ceil((section.coverage?.totalBeds ?? 0) / Math.max(section.coverage?.totalBays ?? 1, 1))
+      : 0
+
+  const fallbackBedCount =
+    greenhouse?.benchesPerBay ??
+    fieldBlock?.spotChecksPerBay ??
+    bedsPerBayFromCoverage
+
+  if (fallbackBedCount && fallbackBedCount > 0) {
+    return Array.from({ length: fallbackBedCount }, (_, index) => String(index + 1))
+  }
+
+  return totalBayCount > 0 ? ['1'] : []
+}
+
 function buildRows(
   section: ScoutingSessionSectionDto,
   greenhouse: GreenhouseResponse | null,
+  fieldBlock: FieldBlockResponse | null,
 ): GridRow[] {
   const bayMap = new Map<number, { tag: string; beds: Map<number, string> }>()
-  const selectedBayTags =
-    section.includeAllBays === false && section.bayTags && section.bayTags.length > 0
-      ? new Set(section.bayTags)
-      : null
-  const selectedBedTags =
-    section.includeAllBenches === false && section.benchTags && section.benchTags.length > 0
-      ? new Set(section.benchTags)
-      : null
+  const selectedBayTagList =
+    section.includeAllBays === false
+      ? uniqueOrderedStrings(section.bayTags ?? [])
+      : []
+  const selectedBedTagList =
+    section.includeAllBenches === false
+      ? uniqueOrderedStrings(section.benchTags ?? [])
+      : []
+  const selectedBayTags = selectedBayTagList.length > 0 ? new Set(selectedBayTagList) : null
+  const selectedBedTags = selectedBedTagList.length > 0 ? new Set(selectedBedTagList) : null
 
   if (greenhouse?.bays && greenhouse.bays.length > 0) {
     const sortedBays = [...greenhouse.bays].sort((a, b) => a.position - b.position)
@@ -131,21 +204,44 @@ function buildRows(
     bayMap.get(observation.bayIndex)!.beds.set(observation.benchIndex, bedTag)
   }
 
-  if (bayMap.size === 0 && greenhouse?.bayCount) {
-    for (let bayIndex = 1; bayIndex <= greenhouse.bayCount; bayIndex++) {
-      const bayTag = greenhouse.bayTags?.[bayIndex - 1] ?? String(bayIndex)
-      if (selectedBayTags && !selectedBayTags.has(bayTag)) continue
+  if (bayMap.size === 0) {
+    const greenhouseBayTags = uniqueOrderedStrings(greenhouse?.bayTags ?? [])
+    const fieldBayTags = uniqueOrderedStrings(fieldBlock?.bayTags ?? [])
+    const fallbackBayCount =
+      greenhouse?.bayCount ??
+      fieldBlock?.bayCount ??
+      section.coverage?.totalBays ??
+      selectedBayTagList.length
+
+    const fallbackBayTags =
+      selectedBayTagList.length > 0
+        ? selectedBayTagList
+        : greenhouseBayTags.length > 0
+        ? greenhouseBayTags
+        : fieldBayTags.length > 0
+        ? fieldBayTags
+        : fallbackBayCount && fallbackBayCount > 0
+        ? Array.from(
+            { length: fallbackBayCount },
+            (_, index) => section.fieldBlockId ? `Row ${index + 1}` : `Bay ${index + 1}`,
+          )
+        : []
+
+    const fallbackBedTags = inferFallbackBedTags(section, greenhouse, fieldBlock, fallbackBayTags.length)
+
+    fallbackBayTags.forEach((bayTag, bayIndex) => {
+      if (selectedBayTags && !selectedBayTags.has(bayTag)) return
 
       const beds = new Map<number, string>()
-      for (let benchIndex = 1; benchIndex <= (greenhouse.benchesPerBay ?? 2); benchIndex++) {
-        const bedTag = greenhouse.benchTags?.[benchIndex - 1] ?? String(benchIndex)
-        if (selectedBedTags && !selectedBedTags.has(bedTag)) continue
-        beds.set(benchIndex, bedTag)
-      }
+      fallbackBedTags.forEach((bedTag, benchIndex) => {
+        if (selectedBedTags && !selectedBedTags.has(bedTag)) return
+        beds.set(benchIndex + 1, bedTag)
+      })
+
       if (beds.size > 0) {
-        bayMap.set(bayIndex, { tag: bayTag, beds })
+        bayMap.set(bayIndex + 1, { tag: bayTag, beds })
       }
-    }
+    })
   }
 
   const rows: GridRow[] = []
@@ -165,93 +261,53 @@ function buildRows(
   return rows
 }
 
-function EditableCell({
-  obs,
-  sessionId,
-  section,
-  bayIndex,
-  bayTag,
-  benchIndex,
-  benchTag,
-  col,
-  onSaved,
-}: {
-  obs: ScoutingObservationDto | undefined
-  sessionId: string
-  section: ScoutingSessionSectionDto
+interface GridCellMeta {
   bayIndex: number
   bayTag: string
   benchIndex: number
   benchTag: string
   col: GridColumn
-  onSaved: (updated: ScoutingObservationDto) => void
+}
+
+function EditableCell({
+  value,
+  count,
+  col,
+  onValueChange,
+}: {
+  value: string
+  count: number | null
+  col: GridColumn
+  onValueChange: (value: string) => void
 }) {
-  const [val, setVal] = useState(obs ? String(obs.count) : '')
-  const [saving, setSaving] = useState(false)
-
-  useEffect(() => {
-    setVal(obs ? String(obs.count) : '')
-  }, [obs?.count, obs?.id])
-
-  async function commit() {
-    const n = parseInt(val, 10)
-    if (isNaN(n) || n < 0) {
-      setVal(obs ? String(obs.count) : '')
-      return
-    }
-    if (obs && n === obs.count) return
-
-    setSaving(true)
-    try {
-      const updated = obs
-        ? await observationsApi.update(sessionId, obs.id, { count: n })
-        : await observationsApi.create(sessionId, {
-            greenhouseId: section.greenhouseId,
-            fieldBlockId: section.fieldBlockId,
-            ...(col.kind === 'custom'
-              ? { customSpeciesId: col.customSpeciesId }
-              : { speciesCode: col.code }),
-            category: col.category,
-            bayIndex,
-            bayTag,
-            benchIndex,
-            benchTag,
-            count: n,
-          })
-      onSaved(updated)
-    } catch {
-      setVal(obs ? String(obs.count) : '')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const committedCount = obs ? obs.count : null
-  const { bg } = countColor(committedCount, col.category)
+  const { bg } = countColor(count, col.category)
 
   return (
-    <td style={{ background: bg, padding: 0, minWidth: 46 }}>
+    <td style={{ background: bg, padding: 0, minWidth: columnMinWidth(col) }}>
       <input
-        type="number"
-        min={0}
-        value={val}
+        type="text"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        value={value}
         placeholder=""
-        onChange={event => setVal(event.target.value)}
-        onBlur={commit}
-        onKeyDown={event => event.key === 'Enter' && commit()}
+        onChange={event => {
+          const nextValue = event.target.value
+          if (nextValue === '' || /^\d+$/.test(nextValue)) {
+            onValueChange(nextValue)
+          }
+        }}
         style={{
           width: '100%',
           height: '100%',
           border: 'none',
           background: 'transparent',
           textAlign: 'center',
-          color: '#111827',
+          color: countColor(count, col.category).fg,
           fontSize: 11,
           padding: '5px 2px',
           fontFamily: 'DM Mono, monospace',
           outline: 'none',
-          cursor: saving ? 'wait' : 'text',
-          opacity: saving ? 0.5 : 1,
+          cursor: 'text',
           MozAppearance: 'textfield',
         } as React.CSSProperties}
       />
@@ -266,20 +322,24 @@ interface ObservationGridProps {
   farmId: string
   surveySpeciesCodes?: SpeciesCode[]
   customSurveySpeciesIds?: string[]
-  onChanged: () => void
 }
 
-export default function ObservationGrid({
+export interface ObservationGridHandle {
+  flushPendingChanges: () => Promise<void>
+}
+
+const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(function ObservationGrid({
   section,
   sessionId,
   isEditable,
   farmId,
   surveySpeciesCodes,
   customSurveySpeciesIds,
-  onChanged,
-}: ObservationGridProps) {
+}, ref) {
   const [obsMap, setObsMap] = useState<Record<string, ScoutingObservationDto>>({})
+  const [draftValues, setDraftValues] = useState<Record<string, string>>({})
   const [greenhouse, setGreenhouse] = useState<GreenhouseResponse | null>(null)
+  const [fieldBlock, setFieldBlock] = useState<FieldBlockResponse | null>(null)
   const [customSpeciesByCategory, setCustomSpeciesByCategory] = useState<Record<ObservationCategory, CustomSpecies[]>>({
     PEST: [],
     DISEASE: [],
@@ -327,11 +387,34 @@ export default function ObservationGrid({
   }, [section.observations])
 
   useEffect(() => {
-    if (!section.greenhouseId || !farmId) return
+    setDraftValues({})
+  }, [section.targetId])
+
+  useEffect(() => {
+    if (!section.greenhouseId || !farmId) {
+      setGreenhouse(null)
+      return
+    }
     adminFarmsApi.listGreenhouses(farmId)
-      .then(list => setGreenhouse(list.find(item => item.id === section.greenhouseId) ?? null))
-      .catch(() => {})
+      .then(list => {
+        const matched = list.find(item => item.id === section.greenhouseId)
+        setGreenhouse(matched ?? (list.length === 1 ? list[0] : null))
+      })
+      .catch(() => setGreenhouse(null))
   }, [section.greenhouseId, farmId])
+
+  useEffect(() => {
+    if (!section.fieldBlockId || !farmId) {
+      setFieldBlock(null)
+      return
+    }
+    adminFarmsApi.listFieldBlocks(farmId)
+      .then(list => {
+        const matched = list.find(item => item.id === section.fieldBlockId)
+        setFieldBlock(matched ?? (list.length === 1 ? list[0] : null))
+      })
+      .catch(() => setFieldBlock(null))
+  }, [section.fieldBlockId, farmId])
 
   const derivedCustomSpecies = useMemo(() => {
     const byCategory: Record<ObservationCategory, CustomSpecies[]> = {
@@ -405,11 +488,60 @@ export default function ObservationGrid({
   const beneficialCount = visibleColumns.filter(column => column.category === 'BENEFICIAL').length
   const diseaseCount = visibleColumns.filter(column => column.category === 'DISEASE').length
 
-  const rows = useMemo(() => buildRows(section, greenhouse), [section, greenhouse])
+  const rows = useMemo(() => buildRows(section, greenhouse, fieldBlock), [section, greenhouse, fieldBlock])
+  const rowRemarksByKey = useMemo(() => {
+    const remarks: Record<string, string> = {}
 
-  function handleSaved(key: string, updated: ScoutingObservationDto) {
-    setObsMap(previous => ({ ...previous, [key]: updated }))
-    onChanged()
+    Object.values(obsMap).forEach(observation => {
+      const note = observation.notes?.trim()
+      if (!note) return
+
+      const key = rowKey(observation.bayIndex, observation.benchIndex)
+      if (!remarks[key]) {
+        remarks[key] = note
+        return
+      }
+
+      const existing = remarks[key]
+        .split(' | ')
+        .map(item => item.trim())
+        .filter(Boolean)
+
+      if (!existing.includes(note)) {
+        remarks[key] = [...existing, note].join(' | ')
+      }
+    })
+
+    return remarks
+  }, [obsMap])
+
+  const cellMetaByKey = useMemo(() => {
+    const map = new Map<string, GridCellMeta>()
+    rows.forEach(row => {
+      visibleColumns.forEach(col => {
+        map.set(obsKey(row.bayIndex, row.benchIndex, col.key), {
+          bayIndex: row.bayIndex,
+          bayTag: row.bayTag,
+          benchIndex: row.benchIndex,
+          benchTag: row.benchTag,
+          col,
+        })
+      })
+    })
+    return map
+  }, [rows, visibleColumns])
+
+  function setDraftValueForKey(key: string, nextValue: string, committedObs?: ScoutingObservationDto) {
+    setDraftValues(previous => {
+      const committedValue = committedObs ? String(committedObs.count) : ''
+      if (nextValue === committedValue) {
+        if (!(key in previous)) return previous
+        const next = { ...previous }
+        delete next[key]
+        return next
+      }
+      return { ...previous, [key]: nextValue }
+    })
   }
 
   function handleCustomSpeciesCreated(created: CustomSpecies[]) {
@@ -425,6 +557,80 @@ export default function ObservationGrid({
     ])))
     setModalCategory(null)
   }
+
+  async function flushPendingChanges() {
+    const pendingEntries = Object.entries(draftValues)
+    if (pendingEntries.length === 0) return
+
+    let nextObsMap = { ...obsMap }
+    let nextDraftValues = { ...draftValues }
+
+    try {
+      for (const [key, rawValue] of pendingEntries) {
+        const trimmedValue = rawValue.trim()
+        const existingObservation = nextObsMap[key]
+        const committedValue = existingObservation ? String(existingObservation.count) : ''
+
+        if (trimmedValue === committedValue) {
+          delete nextDraftValues[key]
+          continue
+        }
+
+        if (trimmedValue === '') {
+          if (existingObservation) {
+            await observationsApi.delete(sessionId, existingObservation.id)
+            delete nextObsMap[key]
+          }
+          delete nextDraftValues[key]
+          continue
+        }
+
+        const parsedCount = parseCountValue(trimmedValue)
+        if (parsedCount === null) continue
+
+        if (existingObservation) {
+          const updatedObservation = await observationsApi.update(sessionId, existingObservation.id, {
+            count: parsedCount,
+          })
+          nextObsMap[key] = updatedObservation
+          delete nextDraftValues[key]
+          continue
+        }
+
+        const cellMeta = cellMetaByKey.get(key)
+        if (!cellMeta) continue
+
+        const createBody: CreateObservationRequest = {
+          greenhouseId: section.greenhouseId,
+          fieldBlockId: section.fieldBlockId,
+          ...(cellMeta.col.kind === 'custom'
+            ? { customSpeciesId: cellMeta.col.customSpeciesId }
+            : { speciesCode: cellMeta.col.code }),
+          category: cellMeta.col.category,
+          bayIndex: cellMeta.bayIndex,
+          bayTag: cellMeta.bayTag,
+          benchIndex: cellMeta.benchIndex,
+          benchTag: cellMeta.benchTag,
+          count: parsedCount,
+        }
+
+        const createdObservation = await observationsApi.create(sessionId, createBody)
+        nextObsMap[key] = createdObservation
+        delete nextDraftValues[key]
+      }
+    } catch (error) {
+      setObsMap(nextObsMap)
+      setDraftValues(nextDraftValues)
+      throw error
+    }
+
+    setObsMap(nextObsMap)
+    setDraftValues(nextDraftValues)
+  }
+
+  useImperativeHandle(ref, () => ({
+    flushPendingChanges,
+  }), [flushPendingChanges])
 
   const thBase: React.CSSProperties = {
     padding: '5px 6px',
@@ -469,8 +675,8 @@ export default function ObservationGrid({
         </div>
       )}
 
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ borderCollapse: 'collapse', fontSize: 11, tableLayout: 'auto' }}>
+      <div style={{ overflowX: 'auto', paddingBottom: 6 }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: 11, tableLayout: 'auto', width: 'max-content', minWidth: '100%' }}>
           <thead>
             <tr>
               <th colSpan={2} style={{ ...thBase, background: '#f9fafb', color: '#374151', textAlign: 'center' }}>
@@ -491,6 +697,9 @@ export default function ObservationGrid({
                   Disease
                 </th>
               )}
+              <th style={{ ...thBase, background: '#f9fafb', color: '#374151', textAlign: 'center', minWidth: 180 }}>
+                Remarks
+              </th>
             </tr>
 
             <tr>
@@ -501,7 +710,7 @@ export default function ObservationGrid({
                   key={col.key}
                   style={{
                     ...thBase,
-                    minWidth: col.kind === 'custom' ? 76 : 46,
+                    minWidth: columnMinWidth(col),
                     textAlign: 'center',
                     background:
                       col.category === 'PEST' ? '#fffbeb' :
@@ -523,14 +732,17 @@ export default function ObservationGrid({
                   </div>
                 </th>
               ))}
+              <th style={{ ...thBase, background: '#f3f4f6', color: '#374151', minWidth: 180, textAlign: 'center' }}>
+                Remarks
+              </th>
             </tr>
           </thead>
 
           <tbody>
             {rows.map(row => {
-              const rowKey = `${row.bayIndex}-${row.benchIndex}`
+              const rowId = `${row.bayIndex}-${row.benchIndex}`
               return (
-                <tr key={rowKey} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
+                <tr key={rowId} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
                   {row.rowSpan !== undefined && (
                     <td
                       rowSpan={row.rowSpan}
@@ -555,20 +767,17 @@ export default function ObservationGrid({
                   {visibleColumns.map(col => {
                     const key = obsKey(row.bayIndex, row.benchIndex, col.key)
                     const obs = obsMap[key]
+                    const hasDraftValue = Object.prototype.hasOwnProperty.call(draftValues, key)
+                    const displayValue = hasDraftValue ? draftValues[key] : obs ? String(obs.count) : ''
 
                     if (isEditable) {
                       return (
                         <EditableCell
                           key={col.key}
-                          obs={obs}
-                          sessionId={sessionId}
-                          section={section}
-                          bayIndex={row.bayIndex}
-                          bayTag={row.bayTag}
-                          benchIndex={row.benchIndex}
-                          benchTag={row.benchTag}
+                          value={displayValue}
+                          count={parseCountValue(displayValue)}
                           col={col}
-                          onSaved={updated => handleSaved(key, updated)}
+                          onValueChange={nextValue => setDraftValueForKey(key, nextValue, obs)}
                         />
                       )
                     }
@@ -585,13 +794,27 @@ export default function ObservationGrid({
                           textAlign: 'center',
                           fontFamily: 'DM Mono, monospace',
                           fontWeight: count !== null && count > 0 ? 600 : 400,
-                          minWidth: col.kind === 'custom' ? 76 : 46,
+                          minWidth: columnMinWidth(col),
                         }}
                       >
                         {count !== null ? count : ''}
                       </td>
                     )
                   })}
+
+                  <td
+                    style={{
+                      ...tdBase,
+                      minWidth: 180,
+                      maxWidth: 240,
+                      whiteSpace: 'normal',
+                      color: '#6b7280',
+                      background: '#ffffff',
+                      verticalAlign: 'top',
+                    }}
+                  >
+                    {rowRemarksByKey[rowKey(row.bayIndex, row.benchIndex)] ?? ''}
+                  </td>
                 </tr>
               )
             })}
@@ -600,7 +823,7 @@ export default function ObservationGrid({
 
         {rows.length === 0 && isEditable && (
           <p style={{ fontSize: 12, color: '#9ca3af', padding: '8px 0' }}>
-            No bay/bed structure loaded. Observations entered via mobile app will appear here.
+            No Bay/Bed layout was returned for this target yet. Once the target structure is available, you can enter observations here on web, tablet, or mobile.
           </p>
         )}
       </div>
@@ -615,4 +838,6 @@ export default function ObservationGrid({
       />
     </>
   )
-}
+})
+
+export default ObservationGrid
