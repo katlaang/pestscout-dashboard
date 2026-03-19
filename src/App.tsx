@@ -14,11 +14,19 @@ import AlertsPage from '@/pages/AlertsPage'
 import SettingsPage from '@/pages/SettingsPage'
 import SuperAdminPage from '@/pages/SuperAdminPage'
 import { useIdleTimer } from '@/hooks/useidletimer'
+import { useAuthStore } from '@/hooks/useAuth'
 
 // Wraps protected routes and activates the idle timer
 function AuthenticatedApp() {
   useIdleTimer()
   return <AppLayout />
+}
+
+// Scouts land on /sessions; everyone else lands on the dashboard
+function RootRedirect() {
+  const { user } = useAuthStore()
+  if (user?.role === 'SCOUT') return <Navigate to="/sessions" replace />
+  return <DashboardPage />
 }
 
 export default function App() {
@@ -47,7 +55,7 @@ export default function App() {
             </ProtectedRoute>
           }
         >
-          <Route index element={<DashboardPage />} />
+          <Route index element={<RootRedirect />} />
           <Route path="farms" element={<FarmsPage />} />
           <Route path="sessions" element={<SessionsPage />} />
           <Route path="sessions/:sessionId" element={<SessionDetailPage />} />

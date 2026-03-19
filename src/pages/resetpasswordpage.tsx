@@ -9,7 +9,7 @@ export default function ResetPasswordPage() {
   const token = searchParams.get('token')
   const force = searchParams.get('force') === 'true'   // forced after login if passwordChangeRequired
 
-  const { user, logout, updateUser } = useAuthStore()
+  const { user, logout } = useAuthStore()
 
   const [newPassword, setNewPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -46,19 +46,16 @@ export default function ResetPasswordPage() {
     setSaving(true)
     try {
       if (force && user) {
-        // Forced change after login — use the reset-password endpoint with the user's own session
-        // The backend accepts the same payload; token is optional when user is authenticated
+        // Forced change after login — POST /api/auth/reset-password
         await authApi.resetPassword({ token: token ?? '', newPassword })
-        // Refresh user state to clear passwordChangeRequired flag
-        const me = await import('@/services/api').then(m => m.authApi.me())
-        updateUser(me)
-        setDone(true)
-        setTimeout(() => navigate('/', { replace: true }), 2000)
       } else if (token) {
         await authApi.resetPassword({ token, newPassword })
-        setDone(true)
-        setTimeout(() => navigate('/login', { replace: true }), 2500)
       }
+      setDone(true)
+      // Always log out and redirect to login — user must sign in again with new password
+      setTimeout(() => {
+        logout()
+      }, 2500)
     } catch (e: any) {
       setError(e?.response?.data?.message ?? 'Password reset failed. The link may have expired.')
     } finally {
@@ -94,10 +91,8 @@ export default function ResetPasswordPage() {
       {done ? (
         <div style={{ textAlign: 'center', padding: '20px 0' }}>
           <div style={{ fontSize: 28, marginBottom: 10 }}>✓</div>
-          <p style={{ fontSize: 14, fontWeight: 500, color: '#1e5c3a' }}>Password updated</p>
-          <p style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
-            {force ? 'Redirecting to dashboard…' : 'Redirecting to sign in…'}
-          </p>
+          <p style={{ fontSize: 14, fontWeight: 500, color: '#1e5c3a' }}>Password updated. It is valid for 90 days.</p>
+          <p style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>Redirecting to sign in…</p>
         </div>
       ) : (
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>

@@ -6,6 +6,8 @@ const REASON_MESSAGES: Record<string, string> = {
   idle:            'You were signed out after 5 minutes of inactivity.',
   session_expired: 'Your session expired. Please sign in again.',
   unauthorized:    'Your session is no longer valid. Please sign in again.',
+  session_replaced:'Your session was opened elsewhere. Please log in again.',
+  session_invalid: 'Your session is no longer valid. Please log in again.',
 }
 
 export default function LoginPage() {
@@ -16,16 +18,19 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showExpiryPopup, setShowExpiryPopup] = useState(false)
 
-  // If already authenticated, redirect — but check passwordChangeRequired first
+  // If already authenticated, redirect — but check password flags first
   useEffect(() => {
     if (!user) return
     if (user.passwordChangeRequired) {
       navigate('/reset-password?force=true', { replace: true })
-    } else {
+    } else if (user.passwordExpiryWarningRequired && !showExpiryPopup) {
+      setShowExpiryPopup(true)
+    } else if (!user.passwordExpiryWarningRequired) {
       navigate('/', { replace: true })
     }
-  }, [user, navigate])
+  }, [user, navigate, showExpiryPopup])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -46,6 +51,27 @@ export default function LoginPage() {
 
   return (
     <div style={{ minHeight: '100vh', background: '#f9fafb', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+
+      {/* Password expiry warning popup */}
+      {showExpiryPopup && user && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <div style={{ background: '#fff', borderRadius: 12, border: '0.5px solid #e5e7eb', boxShadow: '0 8px 32px rgba(0,0,0,0.14)', width: '100%', maxWidth: 400, padding: 24 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 600, color: '#111827', marginBottom: 10 }}>Password expiry notice</h3>
+            <div style={{ marginBottom: 20, padding: '10px 14px', borderRadius: 8, background: '#fffbf0', border: '0.5px solid #fde68a', fontSize: 13, color: '#92400e' }}>
+              Your password is nearing expiry. Please change your password in the next {user.passwordExpiryWarningDaysRemaining} days
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn-secondary" style={{ fontSize: 12 }} onClick={() => { setShowExpiryPopup(false); navigate('/', { replace: true }) }}>
+                Remind me later
+              </button>
+              <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => navigate('/settings?changePassword=true', { replace: true })}>
+                Change password
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{ width: '100%', maxWidth: 360 }}>
         <Logo />
 

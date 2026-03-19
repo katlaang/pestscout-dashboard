@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { farmsApi, analyticsApi } from '@/services/api'
 import type { FarmResponse, HeatmapResponse } from '@/types'
 import HeatmapGrid from '@/components/dashboard/HeatmapGrid'
-import { currentWeek, SEVERITY_COLORS, SEVERITY_ORDER } from '@/utils'
+import { SEVERITY_COLORS, SEVERITY_ORDER } from '@/utils'
 
 export default function HeatmapPage() {
   const [farms, setFarms] = useState<FarmResponse[]>([])
@@ -11,9 +11,9 @@ export default function HeatmapPage() {
   const [loading, setLoading] = useState(false)
   const [selectedSection, setSelectedSection] = useState<string | null>(null)
 
-  const { week, year } = currentWeek()
-  const [weekInput, setWeekInput] = useState(week)
-  const [yearInput, setYearInput] = useState(year)
+  const now = new Date()
+  const [monthInput, setMonthInput] = useState(now.getMonth() + 1)
+  const [yearInput, setYearInput] = useState(now.getFullYear())
 
   useEffect(() => {
     farmsApi.list().then(data => {
@@ -30,7 +30,7 @@ export default function HeatmapPage() {
   function fetchHeatmap() {
     if (!farmId) return
     setLoading(true)
-    analyticsApi.heatmap(farmId, weekInput, yearInput)
+    analyticsApi.heatmap(farmId, monthInput, yearInput)
       .then(data => {
         setHeatmap(data)
         if (data.sections.length > 0) setSelectedSection(data.sections[0].targetId)
@@ -38,41 +38,47 @@ export default function HeatmapPage() {
       .finally(() => setLoading(false))
   }
 
-  const activeSection = heatmap?.sections.find(s => s.targetId === selectedSection) ?? heatmap?.sections[0]
-
-  // Compute summary stats for active section
+  const activeSection = heatmap?.sections.find(section => section.targetId === selectedSection) ?? heatmap?.sections[0]
   const totalCells = activeSection?.cells.length ?? 0
-  const alertCells = activeSection?.cells.filter(c =>
-    c.severityLevel === 'EMERGENCY' || c.severityLevel === 'VERY_HIGH'
+  const alertCells = activeSection?.cells.filter(cell =>
+    cell.severityLevel === 'EMERGENCY' || cell.severityLevel === 'VERY_HIGH',
   ).length ?? 0
-  const highCells = activeSection?.cells.filter(c => c.severityLevel === 'HIGH').length ?? 0
-  const totalObs = activeSection?.cells.reduce((a, c) => a + c.totalCount, 0) ?? 0
+  const highCells = activeSection?.cells.filter(cell => cell.severityLevel === 'HIGH').length ?? 0
+  const totalObs = activeSection?.cells.reduce((acc, cell) => acc + cell.totalCount, 0) ?? 0
 
   return (
     <div style={{ padding: '24px 28px' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          marginBottom: 24,
+          flexWrap: 'wrap',
+          gap: 12,
+        }}
+      >
         <div>
           <h1 style={{ color: '#111827', marginBottom: 4 }}>Heat maps</h1>
           <p style={{ fontSize: 13, color: '#6b7280' }}>
-            Pest pressure by bay and bench — hover any cell for details
+            Pest pressure by Bay ID and Bed ID - hover any cell for details
           </p>
         </div>
 
-        {/* Controls */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <select className="input" style={{ width: 180 }} value={farmId} onChange={e => setFarmId(e.target.value)}>
-            {farms.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            {farms.map(farm => <option key={farm.id} value={farm.id}>{farm.name}</option>)}
           </select>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <label style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>Week</label>
+            <label style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>Month</label>
             <input
               className="input"
               type="number"
-              min={1} max={53}
+              min={1}
+              max={12}
               style={{ width: 64 }}
-              value={weekInput}
-              onChange={e => setWeekInput(Number(e.target.value))}
+              value={monthInput}
+              onChange={e => setMonthInput(Number(e.target.value))}
             />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -80,7 +86,8 @@ export default function HeatmapPage() {
             <input
               className="input"
               type="number"
-              min={2020} max={2099}
+              min={2020}
+              max={2099}
               style={{ width: 80 }}
               value={yearInput}
               onChange={e => setYearInput(Number(e.target.value))}
@@ -94,27 +101,34 @@ export default function HeatmapPage() {
 
       {loading && (
         <div style={{ padding: 48, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
-          Loading heat map…
+          Loading heat map...
         </div>
       )}
 
       {!loading && heatmap && (
         <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16 }}>
-
-          {/* Sidebar: section list */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <p style={{ fontSize: 10, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.7px', paddingLeft: 4, marginBottom: 4 }}>
+            <p
+              style={{
+                fontSize: 10,
+                color: '#9ca3af',
+                textTransform: 'uppercase',
+                letterSpacing: '0.7px',
+                paddingLeft: 4,
+                marginBottom: 4,
+              }}
+            >
               Structures
             </p>
-            {heatmap.sections.map(sec => {
-              const hasEmergency = sec.cells.some(c => c.severityLevel === 'EMERGENCY')
-              const hasHigh = sec.cells.some(c => c.severityLevel === 'VERY_HIGH' || c.severityLevel === 'HIGH')
-              const isActive = sec.targetId === selectedSection
+            {heatmap.sections.map(section => {
+              const hasEmergency = section.cells.some(cell => cell.severityLevel === 'EMERGENCY')
+              const hasHigh = section.cells.some(cell => cell.severityLevel === 'VERY_HIGH' || cell.severityLevel === 'HIGH')
+              const isActive = section.targetId === selectedSection
 
               return (
                 <button
-                  key={sec.targetId}
-                  onClick={() => setSelectedSection(sec.targetId)}
+                  key={section.targetId}
+                  onClick={() => setSelectedSection(section.targetId)}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -131,7 +145,7 @@ export default function HeatmapPage() {
                       : { background: '#fff', borderColor: '#e5e7eb', color: '#374151' }),
                   }}
                 >
-                  <span style={{ fontSize: 12, fontWeight: isActive ? 500 : 400 }}>{sec.targetName}</span>
+                  <span style={{ fontSize: 12, fontWeight: isActive ? 500 : 400 }}>{section.targetName}</span>
                   {hasEmergency && (
                     <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#9b1c1c', flexShrink: 0 }} />
                   )}
@@ -144,23 +158,26 @@ export default function HeatmapPage() {
 
             {heatmap.sections.length === 0 && (
               <p style={{ fontSize: 12, color: '#9ca3af', paddingLeft: 4 }}>
-                No structures with data this week
+                No structures with data this month
               </p>
             )}
 
-            {/* Legend card */}
             <div className="card" style={{ marginTop: 8, padding: '12px' }}>
               <p style={{ fontSize: 10, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.7px', marginBottom: 8 }}>
                 Severity scale
               </p>
               {SEVERITY_ORDER.map(level => (
                 <div key={level} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 5 }}>
-                  <div style={{
-                    width: 12, height: 12, borderRadius: 3,
-                    background: SEVERITY_COLORS[level],
-                    border: '0.5px solid rgba(0,0,0,0.06)',
-                    flexShrink: 0,
-                  }} />
+                  <div
+                    style={{
+                      width: 12,
+                      height: 12,
+                      borderRadius: 3,
+                      background: SEVERITY_COLORS[level],
+                      border: '0.5px solid rgba(0,0,0,0.06)',
+                      flexShrink: 0,
+                    }}
+                  />
                   <span style={{ fontSize: 11, color: '#6b7280' }}>
                     {level.charAt(0) + level.slice(1).toLowerCase().replace('_', ' ')}
                   </span>
@@ -169,10 +186,7 @@ export default function HeatmapPage() {
             </div>
           </div>
 
-          {/* Main: heatmap + stats */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-
-            {/* Stats row */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
               {[
                 { label: 'Total cells scouted', value: totalCells, color: undefined },
@@ -189,24 +203,16 @@ export default function HeatmapPage() {
               ))}
             </div>
 
-            {/* Grid */}
             {activeSection ? (
               <div className="card">
                 <div style={{ marginBottom: 14 }}>
-                  <h2 style={{ fontSize: 14, color: '#111827', marginBottom: 2 }}>
-                    {activeSection.targetName}
-                  </h2>
+                  <h2 style={{ fontSize: 14, color: '#111827', marginBottom: 2 }}>{activeSection.targetName}</h2>
                   <p style={{ fontSize: 12, color: '#6b7280' }}>
-                    {activeSection.bayCount} bays × {activeSection.benchesPerBay} benches · W{heatmap.week} {heatmap.year}
+                    {activeSection.bayCount} bays x {activeSection.benchesPerBay} beds - {heatmap.month ?? monthInput}/{heatmap.year}
                   </p>
                 </div>
                 <div style={{ overflowX: 'auto' }}>
-                  <HeatmapGrid
-                    section={activeSection}
-                    cellSize={28}
-                    gap={4}
-                    showLegend={false}
-                  />
+                  <HeatmapGrid section={activeSection} cellSize={28} gap={4} showLegend={false} />
                 </div>
               </div>
             ) : (

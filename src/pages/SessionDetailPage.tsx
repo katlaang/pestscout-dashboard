@@ -1,16 +1,26 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { sessionsApi } from '@/services/api'
-import type { ScoutingSessionDetailDto, ScoutingSessionAuditDto } from '@/types'
+import { sessionsApi, adminUsersApi, adminFarmsApi } from '@/services/api'
+import ObservationGrid from '@/components/scouting/ObservationGrid'
+import SessionPlannerFields, { type SessionPlannerTargetDraft } from '@/components/scouting/SessionPlannerFields'
+import ConfirmModal from '@/components/common/ConfirmModal'
+import type {
+  ScoutingSessionDetailDto,
+  ScoutingSessionAuditDto,
+  UserDto,
+  GreenhouseResponse,
+  FieldBlockResponse,
+  SpeciesCode,
+} from '@/types'
 import {
   SESSION_STATUS_BADGE, SPECIES_LABELS, formatDate, formatDateTime,
-  SEVERITY_COLORS, severityFromCount, exportToCsv
+  exportToCsv
 } from '@/utils'
 import { useAuthStore } from '@/hooks/useAuth'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const STARTABLE: string[] = ['DRAFT', 'NEW', 'REOPENED', 'INCOMPLETE']
+const STARTABLE: string[] = ['NEW', 'REOPENED', 'INCOMPLETE']
 
 function actorLabel(user: { firstName?: string; lastName?: string; email?: string } | null) {
   if (!user) return 'Unknown'
@@ -31,12 +41,33 @@ export default function SessionDetailPage() {
   const [error,         setError]         = useState<string | null>(null)
   const [banner,        setBanner]        = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
 
+  // Planner fields for draft/new sessions
+  const [scouts,        setScouts]        = useState<UserDto[]>([])
+  const [plannerStructures, setPlannerStructures] = useState<(GreenhouseResponse | FieldBlockResponse)[]>([])
+  const [plannerTargets, setPlannerTargets] = useState<SessionPlannerTargetDraft[]>([])
+  const [surveySpeciesCodes, setSurveySpeciesCodes] = useState<SpeciesCode[]>([])
+  const [draftScoutId,  setDraftScoutId]  = useState('')
+  const [draftDate,     setDraftDate]     = useState('')
+  const [draftWeek,     setDraftWeek]     = useState<number>(1)
+  const [draftCrop,     setDraftCrop]     = useState('')
+  const [draftVariety,  setDraftVariety]  = useState('')
+  const [draftNotes,    setDraftNotes]    = useState('')
+  const [draftSaving,   setDraftSaving]   = useState(false)
+  const [plannerEditing, setPlannerEditing] = useState(false)
+  const [weatherTemp,   setWeatherTemp]   = useState('')
+  const [weatherRh,     setWeatherRh]     = useState('')
+  const [weatherTime,   setWeatherTime]   = useState('')
+  const [weatherNotes,  setWeatherNotes]  = useState('')
+  const [weatherSaving, setWeatherSaving] = useState(false)
+  const [deleteLoading, setDeleteLoading] = useState(false)
+
   // Modals
   const [showCompleteWarn, setShowCompleteWarn] = useState(false)
   const [showSubmitWarn,   setShowSubmitWarn]   = useState(false)
   const [showReopenModal,  setShowReopenModal]  = useState(false)
   const [showRemoteModal,  setShowRemoteModal]  = useState(false)
   const [showAuditTrail,   setShowAuditTrail]   = useState(false)
+  const [showDeleteModal,  setShowDeleteModal]  = useState(false)
 
   const role      = user?.role ?? ''
   const isScout   = role === 'SCOUT'
@@ -50,6 +81,72 @@ export default function SessionDetailPage() {
       .catch(() => setError('Session not found or you do not have access'))
       .finally(() => setLoading(false))
   }, [sessionId])
+
+  // Initialise draft form fields from session whenever it loads/changes
+  useEffect(() => {
+    if (!session) return
+    setDraftScoutId(session.scoutId ?? '')
+    setDraftDate(session.sessionDate)
+    setDraftWeek(session.weekNumber)
+    setDraftCrop(session.crop ?? '')
+    setDraftVariety(session.variety ?? '')
+    setDraftNotes(session.notes ?? '')
+    setSurveySpeciesCodes(session.surveySpeciesCodes ?? [])
+    setPlannerTargets(
+      session.sections.map(section => ({
+        structureId: section.greenhouseId ?? section.fieldBlockId ?? section.targetId,
+        structureType: section.greenhouseId ? 'GREENHOUSE' : 'FIELD',
+        includeAllBays: section.includeAllBays ?? true,
+        includeAllBenches: section.includeAllBenches ?? true,
+        bayTags: section.bayTags ?? [],
+        benchTags: section.benchTags ?? [],
+        areaHectares: section.areaHectares != null ? String(section.areaHectares) : '',
+      })),
+    )
+  }, [session?.id, session?.version])
+
+  useEffect(() => {
+    if (!session) return
+    setWeatherTemp(session.temperatureCelsius != null ? String(session.temperatureCelsius) : '')
+    setWeatherRh(session.relativeHumidityPercent != null ? String(session.relativeHumidityPercent) : '')
+    setWeatherTime(session.observationTime ?? '')
+    setWeatherNotes(session.weatherNotes ?? '')
+  }, [
+    session?.id,
+    session?.temperatureCelsius,
+    session?.relativeHumidityPercent,
+    session?.observationTime,
+    session?.weatherNotes,
+  ])
+
+  useEffect(() => {
+    setPlannerEditing(false)
+  }, [session?.id, session?.status])
+
+  // Load scouts list for planner form (managers only)
+  useEffect(() => {
+    if (!session || !isManager || !['DRAFT', 'NEW'].includes(session.status)) return
+    adminUsersApi.listScouts(session.farmId).then(setScouts).catch(() => setScouts([]))
+  }, [session?.status, session?.farmId, isManager])
+
+  useEffect(() => {
+    if (!session || !isManager || !['DRAFT', 'NEW'].includes(session.status)) return
+
+    Promise.all([
+      adminFarmsApi.listGreenhouses(session.farmId).catch(() => [] as GreenhouseResponse[]),
+      adminFarmsApi.listFieldBlocks(session.farmId).catch(() => [] as FieldBlockResponse[]),
+    ]).then(([greenhouses, fieldBlocks]) => {
+      const hasGreenhouseTargets = session.sections.some(section => !!section.greenhouseId)
+      const hasFieldTargets = session.sections.some(section => !!section.fieldBlockId)
+
+      if (hasGreenhouseTargets || (!hasFieldTargets && greenhouses.length > 0)) {
+        setPlannerStructures(greenhouses)
+        return
+      }
+
+      setPlannerStructures(fieldBlocks)
+    })
+  }, [session?.farmId, session?.status, session?.sections, isManager])
 
   useEffect(() => {
     if (!showAuditTrail || !sessionId) return
@@ -71,6 +168,17 @@ export default function SessionDetailPage() {
       flash('Session started — now in progress')
     } catch (e: any) {
       flash(e?.response?.data?.message ?? 'Failed to start session', 'error')
+    } finally { setActionLoading(false) }
+  }
+
+  async function handleAcceptRemoteStart() {
+    if (!sessionId) return
+    setActionLoading(true)
+    try {
+      setSession(await sessionsApi.acceptRemoteStart(sessionId))
+      flash('Remote start accepted — session is now in progress')
+    } catch (e: any) {
+      flash(e?.response?.data?.message ?? 'Failed to accept remote start', 'error')
     } finally { setActionLoading(false) }
   }
 
@@ -118,6 +226,65 @@ export default function SessionDetailPage() {
     } finally { setActionLoading(false) }
   }
 
+  async function handleSaveDraft() {
+    if (!sessionId || !session) return
+    setDraftSaving(true)
+    try {
+      const previousStatus = session.status
+      const updated = await sessionsApi.update(sessionId, {
+        scoutId:     draftScoutId || undefined,
+        sessionDate: draftDate,
+        weekNumber:  draftWeek,
+        crop:        draftCrop    || undefined,
+        variety:     draftVariety || undefined,
+        surveySpeciesCodes: surveySpeciesCodes.length > 0 ? surveySpeciesCodes : undefined,
+        targets: plannerTargets.map(target => ({
+          ...(target.structureType === 'FIELD'
+            ? { fieldBlockId: target.structureId }
+            : { greenhouseId: target.structureId }),
+          includeAllBays: target.includeAllBays,
+          includeAllBenches: target.includeAllBenches,
+          bayTags: target.includeAllBays ? [] : target.bayTags,
+          benchTags: target.includeAllBenches ? [] : target.benchTags,
+          areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
+        })),
+        notes:       draftNotes   || undefined,
+        version:     session.version,
+        actorName:   myName,
+      })
+      setSession(updated)
+      setPlannerEditing(false)
+      if (previousStatus === 'DRAFT' && updated.status === 'NEW') {
+        navigate('/sessions', { replace: true })
+        return
+      }
+      flash(previousStatus === 'DRAFT' ? 'Draft saved' : 'Session saved')
+    } catch (e: any) {
+      flash(e?.response?.data?.message ?? 'Failed to save session', 'error')
+    } finally { setDraftSaving(false) }
+  }
+
+  async function handleSaveWeather() {
+    if (!sessionId || !session) return
+    setWeatherSaving(true)
+    try {
+      const updated = await sessionsApi.update(sessionId, {
+        temperatureCelsius: weatherTemp === '' ? undefined : Number(weatherTemp),
+        relativeHumidityPercent: weatherRh === '' ? undefined : Number(weatherRh),
+        observationTime: weatherTime || undefined,
+        weatherNotes: weatherNotes || undefined,
+        version: session.version,
+        actorName: myName,
+      })
+      setSession(updated)
+      flash('Weather values saved')
+    } catch (e: any) {
+      flash(e?.response?.data?.message ?? 'Failed to save weather values', 'error')
+    } finally {
+      setWeatherSaving(false)
+    }
+  }
+
   async function handleReopen(comment: string) {
     if (!sessionId) return
     setActionLoading(true)
@@ -132,6 +299,19 @@ export default function SessionDetailPage() {
     } catch (e: any) {
       flash(e?.response?.data?.message ?? 'Failed to reopen session', 'error')
     } finally { setActionLoading(false) }
+  }
+
+  async function handleDeleteSession() {
+    if (!sessionId) return
+    setDeleteLoading(true)
+    try {
+      await sessionsApi.delete(sessionId)
+      navigate('/sessions', { replace: true })
+    } catch (e: any) {
+      flash(e?.response?.data?.message ?? 'Failed to delete session', 'error')
+      setDeleteLoading(false)
+      setShowDeleteModal(false)
+    }
   }
 
   // ── Loading / error ───────────────────────────────────────────────────────
@@ -156,6 +336,9 @@ export default function SessionDetailPage() {
   const diseaseObs = allObs.filter(o => o.category === 'DISEASE').length
 
   const isAssignedScout    = isScout && session.scoutId === user?.id
+  const canManagePlanner   = isManager && ['DRAFT', 'NEW'].includes(session.status)
+  const plannerReadOnly    = canManagePlanner && !plannerEditing
+  const canDeleteSession   = isManager && ['DRAFT', 'NEW'].includes(session.status)
   // remoteStartConsentRequired is a runtime field — present in the enriched backend version
   const remoteStartPending = !!(session as any).remoteStartConsentRequired
 
@@ -164,11 +347,14 @@ export default function SessionDetailPage() {
   //
   // SCOUT only (assigned to this session):
   const canStart    = isAssignedScout && STARTABLE.includes(session.status)
-  const canSubmit   = isAssignedScout && ['NEW', 'DRAFT', 'IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
+  const canSubmit   = isAssignedScout && ['NEW', 'IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
   const canComplete = isAssignedScout && ['IN_PROGRESS', 'SUBMITTED', 'REOPENED', 'INCOMPLETE'].includes(session.status)
 
   // MANAGER / FARM_ADMIN / SUPER_ADMIN — reopen is COMPLETED only (per reopenSession service)
   const canReopen = isManager && session.status === 'COMPLETED'
+  const canEditWeather =
+    (isAssignedScout && ['NEW', 'IN_PROGRESS', 'REOPENED', 'INCOMPLETE', 'SUBMITTED'].includes(session.status)) ||
+    (canManagePlanner && plannerEditing)
 
   // SUPER_ADMIN can request remote start on startable sessions with an assigned scout
   const canRequestRemoteStart =
@@ -202,8 +388,126 @@ export default function SessionDetailPage() {
         <RemoteStartInfoBanner
           requestedByName={(session as any).remoteStartRequestedByName}
           loading={actionLoading}
-          onStart={handleStart}
+          onAccept={handleAcceptRemoteStart}
         />
+      )}
+
+      {/* Planner form */}
+      {canManagePlanner && (
+        <div className="card" style={{ marginBottom: 20, border: '1.5px solid #bae6fd', background: '#f0f9ff' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 600, color: '#0369a1', marginBottom: 4 }}>
+                {session.status === 'DRAFT' ? 'Draft session' : 'Session planner'}
+              </p>
+              <p style={{ fontSize: 11, color: '#0369a1' }}>
+                {session.status === 'DRAFT'
+                  ? 'Planning stays Draft until session date, assigned scout, and at least one target are saved.'
+                  : 'Review the planning values or click Edit to change them.'}
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {plannerReadOnly ? (
+                <button className="btn-secondary" type="button" style={{ fontSize: 12 }} onClick={() => setPlannerEditing(true)}>
+                  Edit
+                </button>
+              ) : (
+                <>
+                  <button
+                    className="btn-secondary"
+                    type="button"
+                    style={{ fontSize: 12 }}
+                    onClick={() => {
+                      setDraftScoutId(session.scoutId ?? '')
+                      setDraftDate(session.sessionDate)
+                      setDraftWeek(session.weekNumber)
+                      setDraftCrop(session.crop ?? '')
+                      setDraftVariety(session.variety ?? '')
+                      setDraftNotes(session.notes ?? '')
+                      setSurveySpeciesCodes(session.surveySpeciesCodes ?? [])
+                      setPlannerTargets(
+                        session.sections.map(section => ({
+                          structureId: section.greenhouseId ?? section.fieldBlockId ?? section.targetId,
+                          structureType: section.greenhouseId ? 'GREENHOUSE' : 'FIELD',
+                          includeAllBays: section.includeAllBays ?? true,
+                          includeAllBenches: section.includeAllBenches ?? true,
+                          bayTags: section.bayTags ?? [],
+                          benchTags: section.benchTags ?? [],
+                          areaHectares: section.areaHectares != null ? String(section.areaHectares) : '',
+                        })),
+                      )
+                      setPlannerEditing(false)
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button className="btn-primary" type="button" disabled={draftSaving} onClick={handleSaveDraft} style={{ fontSize: 12 }}>
+                    {draftSaving ? 'Saving...' : 'Save'}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>
+                Assigned Scout {!draftScoutId && <span style={{ color: '#d97706' }}>(required)</span>}
+              </label>
+              {scouts.length === 0 ? (
+                <input
+                  className="input"
+                  disabled
+                  value={draftScoutId ? `Assigned scout ${draftScoutId.slice(0, 8)}` : 'No scout assigned'}
+                />
+              ) : (
+                <select className="input" value={draftScoutId} disabled={plannerReadOnly} onChange={e => setDraftScoutId(e.target.value)}>
+                  <option value="">- Assign later -</option>
+                  {scouts.map(s => (
+                    <option key={s.id} value={s.id}>{s.firstName} {s.lastName} ({s.email})</option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Session date</label>
+                <input className="input" type="date" value={draftDate} disabled={plannerReadOnly} onChange={e => setDraftDate(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Week number</label>
+                <input className="input" type="number" min={1} max={53} value={draftWeek} disabled={plannerReadOnly}
+                  onChange={e => setDraftWeek(Number(e.target.value))} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Crop</label>
+                <input className="input" placeholder="e.g. Tomato" value={draftCrop} disabled={plannerReadOnly}
+                  onChange={e => setDraftCrop(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Variety</label>
+                <input className="input" placeholder="e.g. Beefsteak" value={draftVariety} disabled={plannerReadOnly}
+                  onChange={e => setDraftVariety(e.target.value)} />
+              </div>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Notes</label>
+              <input className="input" placeholder="Optional notes for scouts" value={draftNotes} disabled={plannerReadOnly}
+                onChange={e => setDraftNotes(e.target.value)} />
+            </div>
+
+            <SessionPlannerFields
+              structures={plannerStructures}
+              targets={plannerTargets}
+              surveySpeciesCodes={surveySpeciesCodes}
+              onTargetsChange={setPlannerTargets}
+              onSurveySpeciesCodesChange={setSurveySpeciesCodes}
+              readOnly={plannerReadOnly}
+            />
+          </div>
+        </div>
       )}
 
       {/* Reopen comment strip */}
@@ -279,11 +583,21 @@ export default function SessionDetailPage() {
             </button>
           )}
 
+          {canDeleteSession && (
+            <button
+              className="btn-danger"
+              style={{ fontSize: 12 }}
+              disabled={deleteLoading}
+              onClick={() => setShowDeleteModal(true)}>
+              Delete
+            </button>
+          )}
+
           {/* Export */}
           <button className="btn-secondary" style={{ fontSize: 12 }}
             onClick={() => {
               const rows = allObs.map(o => ({
-                bay: o.bayTag ?? o.bayIndex, bench: o.benchTag ?? o.benchIndex,
+                bay: o.bayTag ?? o.bayIndex, bed: o.benchTag ?? o.benchIndex,
                 spot: o.spotIndex, species: SPECIES_LABELS[o.speciesCode] ?? o.speciesCode,
                 category: o.category, count: o.count, notes: o.notes ?? '',
               }))
@@ -327,73 +641,98 @@ export default function SessionDetailPage() {
       )}
 
       {/* Weather */}
-      {(session.temperatureCelsius || session.relativeHumidityPercent || session.weatherNotes) && (
+      {(canEditWeather || session.temperatureCelsius != null || session.relativeHumidityPercent != null || session.observationTime || session.weatherNotes) && (
         <div className="card" style={{ marginBottom: 20 }}>
-          <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 10 }}>Weather</p>
-          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', fontSize: 12, color: '#374151' }}>
-            {session.temperatureCelsius && <span>🌡 {session.temperatureCelsius}°C</span>}
-            {session.relativeHumidityPercent && <span>💧 {session.relativeHumidityPercent}% RH</span>}
-            {session.observationTime && <span>🕐 {session.observationTime}</span>}
-            {session.weatherNotes && <span style={{ color: '#6b7280' }}>{session.weatherNotes}</span>}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+            <div>
+              <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 4 }}>Weather</p>
+              <p style={{ fontSize: 11, color: '#9ca3af' }}>Enter the weather values manually for now.</p>
+            </div>
+            {canEditWeather && (
+              <button className="btn-secondary" style={{ fontSize: 12 }} disabled={weatherSaving} onClick={handleSaveWeather}>
+                {weatherSaving ? 'Saving...' : 'Save weather'}
+              </button>
+            )}
           </div>
+
+          {canEditWeather ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Temp</label>
+                <input className="input" type="number" value={weatherTemp} onChange={e => setWeatherTemp(e.target.value)} placeholder="Celsius" />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>RH</label>
+                <input className="input" type="number" value={weatherRh} onChange={e => setWeatherRh(e.target.value)} placeholder="Percent" />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Time</label>
+                <input className="input" type="time" value={weatherTime} onChange={e => setWeatherTime(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Remarks</label>
+                <input className="input" value={weatherNotes} onChange={e => setWeatherNotes(e.target.value)} placeholder="Optional weather notes" />
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', fontSize: 12, color: '#374151' }}>
+              {session.temperatureCelsius != null && <span>Temp {session.temperatureCelsius} C</span>}
+              {session.relativeHumidityPercent != null && <span>RH {session.relativeHumidityPercent}%</span>}
+              {session.observationTime && <span>Time {session.observationTime}</span>}
+              {session.weatherNotes && <span style={{ color: '#6b7280' }}>{session.weatherNotes}</span>}
+            </div>
+          )}
         </div>
       )}
 
       {/* Sections / Observations */}
-      {session.sections.map(section => (
-        <div key={section.targetId} className="card" style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <span style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>
-              {section.greenhouseId ? '🏠 Greenhouse' : '🌾 Field block'}
-              <span style={{ fontSize: 10, color: '#9ca3af', marginLeft: 8, fontFamily: 'DM Mono, monospace' }}>
-                {(section.greenhouseId ?? section.fieldBlockId ?? '').slice(0, 8)}…
+      {session.sections.map(section => {
+        const sectionObs = section.observations.filter(o => !o.deleted)
+        const isEditable = isAssignedScout && ['IN_PROGRESS', 'REOPENED'].includes(session.status)
+        return (
+          <div key={section.targetId} className="card" style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <span style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>
+                {section.greenhouseId ? '🏠 Greenhouse' : '🌾 Field block'}
+                <span style={{ fontSize: 10, color: '#9ca3af', marginLeft: 8, fontFamily: 'DM Mono, monospace' }}>
+                  {(section.greenhouseId ?? section.fieldBlockId ?? '').slice(0, 8)}…
+                </span>
               </span>
-            </span>
-            <span style={{ fontSize: 11, color: '#9ca3af' }}>
-              {section.observations.filter(o => !o.deleted).length} observations
-            </span>
+              <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                {sectionObs.length} observation{sectionObs.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+            {section.targetName && (
+              <div style={{ marginBottom: 8, fontSize: 12, color: '#374151', fontWeight: 500 }}>
+                {section.targetName}
+              </div>
+            )}
+            {section.coverage && (
+              <div style={{
+                marginBottom: 12,
+                padding: '8px 10px',
+                borderRadius: 7,
+                background: section.coverage.complete ? '#f0faf4' : '#fffbeb',
+                border: `0.5px solid ${section.coverage.complete ? '#a7dcbc' : '#fde68a'}`,
+                fontSize: 12,
+                color: section.coverage.complete ? '#1e5c3a' : '#92400e',
+              }}>
+                {section.greenhouseId
+                  ? `Coverage ${section.coverage.coveredBays ?? 0}/${section.coverage.totalBays ?? 0} bays, ${section.coverage.coveredBeds ?? 0}/${section.coverage.totalBeds ?? 0} beds${section.coverage.percentComplete != null ? ` (${Math.round(section.coverage.percentComplete)}%)` : ''}`
+                  : `Coverage ${section.coverage.coveredBays ?? 0}/${section.coverage.totalBays ?? 0} rows${section.coverage.percentComplete != null ? ` (${Math.round(section.coverage.percentComplete)}%)` : ''}`}
+              </div>
+            )}
+            <ObservationGrid
+              section={section}
+              sessionId={sessionId!}
+              isEditable={isEditable}
+              farmId={session.farmId}
+              surveySpeciesCodes={session.surveySpeciesCodes}
+              onChanged={() => sessionsApi.get(sessionId!).then(setSession).catch(() => {})}
+            />
           </div>
-
-          {section.observations.filter(o => !o.deleted).length === 0 ? (
-            <p style={{ fontSize: 12, color: '#9ca3af', padding: '8px 0' }}>No observations recorded yet.</p>
-          ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 8 }}>
-              <thead>
-                <tr style={{ borderBottom: '0.5px solid #e5e7eb' }}>
-                  {['Bay', 'Bench', 'Spot', 'Species', 'Category', 'Count', 'Severity', 'Notes'].map(h => (
-                    <th key={h} style={{ textAlign: 'left', padding: '5px 8px 8px', fontSize: 10, fontWeight: 500, color: '#9ca3af', textTransform: 'uppercase' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {section.observations.filter(o => !o.deleted).map(obs => {
-                  const sev = severityFromCount(obs.count)
-                  return (
-                    <tr key={obs.id} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
-                      <td style={{ padding: '7px 8px', fontFamily: 'DM Mono, monospace', fontSize: 11 }}>{obs.bayTag ?? `B${obs.bayIndex}`}</td>
-                      <td style={{ padding: '7px 8px', fontFamily: 'DM Mono, monospace', fontSize: 11 }}>{obs.benchTag ?? obs.benchIndex}</td>
-                      <td style={{ padding: '7px 8px', fontFamily: 'DM Mono, monospace', fontSize: 11 }}>{obs.spotIndex}</td>
-                      <td style={{ padding: '7px 8px', color: '#111827' }}>{SPECIES_LABELS[obs.speciesCode] ?? obs.speciesCode}</td>
-                      <td style={{ padding: '7px 8px' }}>
-                        <span className={`badge ${obs.category === 'PEST' ? 'badge-amber' : obs.category === 'DISEASE' ? 'badge-red' : 'badge-green'}`} style={{ fontSize: 9 }}>
-                          {obs.category}
-                        </span>
-                      </td>
-                      <td style={{ padding: '7px 8px', fontWeight: 500, color: '#111827' }}>{obs.count}</td>
-                      <td style={{ padding: '7px 8px' }}>
-                        <span style={{ display: 'inline-block', padding: '1px 8px', borderRadius: 20, fontSize: 9, fontWeight: 600, background: SEVERITY_COLORS[sev] ?? '#e5e7eb', color: '#fff' }}>
-                          {sev}
-                        </span>
-                      </td>
-                      <td style={{ padding: '7px 8px', color: '#6b7280', maxWidth: 200 }}>{obs.notes || '—'}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-      ))}
+        )
+      })}
 
       {/* Recommendations */}
       {session.recommendations.length > 0 && (
@@ -412,6 +751,22 @@ export default function SessionDetailPage() {
 
       {/* ─────── Modals ─────── */}
 
+      {showDeleteModal && (
+        <ConfirmModal
+          title="Delete session?"
+          message={
+            <span>
+              This will permanently remove this session. Only Draft and New sessions can be deleted.
+            </span>
+          }
+          confirmLabel="Delete session"
+          onConfirm={handleDeleteSession}
+          onCancel={() => setShowDeleteModal(false)}
+          loading={deleteLoading}
+          tone="danger"
+        />
+      )}
+
       {showSubmitWarn && (
         <WarningModal
           title="Submit session for review?"
@@ -428,7 +783,7 @@ export default function SessionDetailPage() {
       {showCompleteWarn && (
         <WarningModal
           title="Complete this session?"
-          warning="Completing the session will lock it permanently. You will NOT be able to edit any observations after this point. Only a manager can reopen a completed session."
+          warning="Are you sure you want to complete this scouting session? You will not be able to edit it afterward."
           confirmLabel="Yes, complete and lock"
           confirmColor="#059669"
           onConfirm={handleComplete}
@@ -470,11 +825,11 @@ export default function SessionDetailPage() {
 // ─── Remote start informational banner ───────────────────────────────────────
 
 function RemoteStartInfoBanner({
-  requestedByName, loading, onStart,
+  requestedByName, loading, onAccept,
 }: {
   requestedByName?: string | null
   loading: boolean
-  onStart: () => void
+  onAccept: () => void
 }) {
   return (
     <div style={{
@@ -483,24 +838,21 @@ function RemoteStartInfoBanner({
     }}>
       <div style={{ background: '#f59e0b', padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ fontSize: 15 }}>📡</span>
-        <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>Remote session start requested</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>remoted accessed session start</span>
       </div>
       <div style={{ padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <p style={{ fontSize: 13, color: '#374151', marginBottom: requestedByName ? 4 : 0 }}>
-            A manager has requested that you start this scouting session.
-          </p>
           {requestedByName && (
-            <p style={{ fontSize: 12, color: '#6b7280' }}>Requested by <strong>{requestedByName}</strong></p>
+            <p style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>Requested by <strong>{requestedByName}</strong></p>
           )}
-          <p style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
-            You may start now or use the ▶ Start session button — either works independently.
+          <p style={{ fontSize: 11, color: '#9ca3af' }}>
+            You can accept the remote start or use the ▶ Start session button to start independently.
           </p>
         </div>
         <button className="btn-primary" disabled={loading}
           style={{ fontSize: 13, padding: '9px 20px', background: '#f59e0b', borderColor: '#f59e0b', flexShrink: 0 }}
-          onClick={onStart}>
-          {loading ? 'Starting…' : '▶ Start now'}
+          onClick={onAccept}>
+          {loading ? 'Accepting…' : 'Accept'}
         </button>
       </div>
     </div>

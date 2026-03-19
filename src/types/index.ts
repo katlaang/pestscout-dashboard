@@ -16,6 +16,8 @@ export interface UserDto {
   active: boolean
   deleted: boolean
   passwordChangeRequired: boolean
+  passwordExpiryWarningRequired?: boolean
+  passwordExpiryWarningDaysRemaining?: number
   reactivationRequired: boolean
   temporaryPasswordExpiresAt?: string
   lastLogin?: string
@@ -56,6 +58,8 @@ export interface FarmResponse {
   contactEmail?: string
   contactPhone?: string
   timezone?: string
+  latitude?: number
+  longitude?: number
   ownerId?: string
   structureType?: FarmStructureType     // drives which structure UI to show
   defaultBayCount?: number
@@ -117,12 +121,24 @@ export interface ScoutingObservationDto {
 
 export interface ScoutingSessionSectionDto {
   targetId: string
+  targetName?: string
   greenhouseId?: string
   fieldBlockId?: string
   includeAllBays?: boolean
   includeAllBenches?: boolean
   bayTags?: string[]
   benchTags?: string[]
+  areaHectares?: number | null
+  coverage?: {
+    totalBays?: number
+    coveredBays?: number
+    totalBeds?: number
+    coveredBeds?: number
+    totalSpots?: number
+    coveredSpots?: number
+    percentComplete?: number
+    complete?: boolean
+  }
   observations: ScoutingObservationDto[]
 }
 
@@ -148,6 +164,7 @@ export interface ScoutingSessionDetailDto {
   observationTime?: string
   weatherNotes?: string
   notes?: string
+  surveySpeciesCodes?: SpeciesCode[]
   defaultPhotoSourceType?: string
   startedAt?: string
   submittedAt?: string
@@ -177,12 +194,20 @@ export interface HeatmapCellResponse {
   dominantSpecies?: string
 }
 
+export interface HeatmapBayLayoutResponse {
+  bayIndex: number
+  bayTag?: string
+  bedCount?: number
+  bedTags?: string[]
+}
+
 export interface HeatmapSectionResponse {
   targetId: string
   targetName?: string
   bayCount: number
   benchesPerBay: number
   cells: HeatmapCellResponse[]
+  bayLayouts?: HeatmapBayLayoutResponse[]
 }
 
 export interface SeverityLegendEntry {
@@ -197,6 +222,7 @@ export interface HeatmapResponse {
   farmId: string
   week: number
   year: number
+  month?: number
   sections: HeatmapSectionResponse[]
   legend: SeverityLegendEntry[]
 }
@@ -313,6 +339,7 @@ export interface UpdateUserRequest {
   phoneNumber?: string
   country?: string
   role?: Role
+  farmId?: string
   isEnabled?: boolean
 }
 
@@ -407,14 +434,49 @@ export interface CreateFarmRequest {
   contactEmail?: string
   contactPhone?: string
   timezone?: string
+  latitude?: number
+  longitude?: number
   defaultBayCount?: number
   defaultBenchesPerBay?: number
   defaultSpotChecksPerBench?: number
-  fieldBlocks?: unknown[]
-  greenhouses?: unknown[]
+  fieldBlocks?: FarmFieldBlockDraftRequest[]
+  greenhouses?: FarmGreenhouseDraftRequest[]
+}
+
+export interface GreenhouseBayRequest {
+  bayTag: string
+  bedCount: number
+  bedTags?: string[]
+}
+
+export interface FarmGreenhouseDraftRequest {
+  name: string
+  description?: string
+  spotChecksPerBench?: number | null
+  areaHectares?: number | null
+  active?: boolean
+  bays?: GreenhouseBayRequest[]
+}
+
+export interface FarmFieldBlockDraftRequest {
+  name: string
+  description?: string
+  bayCount?: number | null
+  spotChecksPerBay?: number | null
+  bayTags?: string[]
+  areaHectares?: number | null
+  cropType?: string
+  active?: boolean
 }
 
 // Greenhouses (GREENHOUSE farms)
+export interface GreenhouseBayResponse {
+  position: number
+  bayTag: string
+  bedCount?: number | null
+  bedTags?: string[]
+}
+
 export interface GreenhouseResponse {
   id: string
   farmId: string
@@ -424,6 +486,10 @@ export interface GreenhouseResponse {
   bayCount?: number
   benchesPerBay?: number
   spotChecksPerBench?: number
+  bayTags?: string[]
+  benchTags?: string[]
+  areaHectares?: number | null
+  bays?: GreenhouseBayResponse[]
   active: boolean
   createdAt: string
   updatedAt: string
@@ -436,6 +502,8 @@ export interface CreateGreenhouseRequest {
   bayCount?: number | null
   benchesPerBay?: number | null
   spotChecksPerBench?: number | null
+  areaHectares?: number | null
+  bays?: GreenhouseBayRequest[]
   active?: boolean
 }
 
@@ -445,6 +513,8 @@ export interface UpdateGreenhouseRequest {
   bayCount?: number | null
   benchesPerBay?: number | null
   spotChecksPerBench?: number | null
+  areaHectares?: number | null
+  bays?: GreenhouseBayRequest[]
   active?: boolean
 }
 
@@ -457,6 +527,8 @@ export interface FieldBlockResponse {
   bayCount?: number
   spotChecksPerBay?: number
   bayTags?: string[]
+  areaHectares?: number | null
+  cropType?: string
   active: boolean
   createdAt: string
   updatedAt: string
@@ -469,6 +541,8 @@ export interface CreateFieldBlockRequest {
   bayCount?: number | null
   spotChecksPerBay?: number | null
   bayTags?: string[]
+  areaHectares?: number | null
+  cropType?: string
   active?: boolean
 }
 
@@ -478,6 +552,8 @@ export interface UpdateFieldBlockRequest {
   bayCount?: number | null
   spotChecksPerBay?: number | null
   bayTags?: string[]
+  areaHectares?: number | null
+  cropType?: string
   active?: boolean
 }
 
@@ -517,6 +593,11 @@ export interface ResetPasswordRequest {
   newPassword: string
 }
 
+export interface ChangePasswordRequest {
+  currentPassword: string
+  newPassword: string
+}
+
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
 export interface BootstrapSuperAdminRequest {
@@ -533,6 +614,27 @@ export interface ErrorResponse {
   message: string
   path: string
   details?: string[]
+}
+
+// ─── Observation CRUD ────────────────────────────────────────────────────────
+
+export interface CreateObservationRequest {
+  greenhouseId?: string
+  fieldBlockId?: string
+  speciesCode: SpeciesCode
+  category: ObservationCategory
+  bayIndex: number
+  bayTag?: string
+  benchIndex: number
+  benchTag?: string
+  spotIndex?: number
+  count: number
+  notes?: string
+}
+
+export interface UpdateObservationRequest {
+  count?: number
+  notes?: string
 }
 
 // ─── Session Audit ────────────────────────────────────────────────────────────

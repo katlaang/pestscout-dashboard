@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuthStore } from '@/hooks/useAuth'
 import { adminFarmsApi, adminUsersApi, adminCacheApi } from '@/services/api'
+import CreateFarmSetupForm from '@/components/farms/CreateFarmSetupForm'
+import StructureDetailsList from '@/components/farms/StructureDetailsList'
+import FarmStructureForm from '@/components/farms/StructureForm'
 import type {
   FarmResponse, GreenhouseResponse, FieldBlockResponse, FarmStructureType,
   UserDto, FarmMemberResponse,
@@ -85,6 +88,7 @@ function FarmsTab() {
   const [structLoading, setStructLoading] = useState(false)
   const [editingStructure, setEditingStructure] = useState<GreenhouseResponse | FieldBlockResponse | null>(null)
   const [showCreateStruct, setShowCreateStruct] = useState(false)
+  const [expandedStructureId, setExpandedStructureId] = useState<string | null>(null)
   const [members, setMembers] = useState<FarmMemberResponse[]>([])
   const [membersLoading, setMembersLoading] = useState(false)
   const [licensePanel, setLicensePanel] = useState(false)
@@ -168,11 +172,26 @@ function FarmsTab() {
         await adminFarmsApi.deleteGreenhouse(selectedFarm.id, s.id)
       }
       setStructures(prev => prev.filter(x => x.id !== s.id))
+      setExpandedStructureId(current => current === s.id ? null : current)
       flash('Structure deleted')
     } catch (e: any) { flash(e?.response?.data?.message ?? 'Delete failed', true) }
   }
 
   const structLabel = selectedFarm?.structureType === 'FIELD' ? 'Field block' : 'Greenhouse'
+  const totalStructureArea = structures.reduce((sum, structure) => {
+    const area = 'areaHectares' in structure ? Number(structure.areaHectares ?? 0) : 0
+    return sum + (Number.isFinite(area) ? area : 0)
+  }, 0)
+  const remainingFarmArea = selectedFarm?.licensedAreaHectares != null
+    ? Math.max(selectedFarm.licensedAreaHectares - totalStructureArea, 0)
+    : Number.POSITIVE_INFINITY
+  const remainingAreaForEdit = (structure?: GreenhouseResponse | FieldBlockResponse | null) => {
+    if (!selectedFarm?.licensedAreaHectares) return Number.POSITIVE_INFINITY
+    const currentArea = structure && 'areaHectares' in structure ? Number(structure.areaHectares ?? 0) : 0
+    return Math.max(selectedFarm.licensedAreaHectares - (totalStructureArea - currentArea), 0)
+  }
+  const structureEditorOpen = showCreateStruct || !!editingStructure
+  const anyEditorOpen = showEditFarm || licensePanel || structureEditorOpen
 
   return (
     <div>
@@ -194,7 +213,14 @@ function FarmsTab() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {farms.map(farm => (
                 <button key={farm.id}
-                  onClick={() => { setSelectedFarm(farm); setLicensePanel(false); setShowCreateStruct(false); setEditingStructure(null); setShowEditFarm(false) }}
+                  onClick={() => {
+                    setSelectedFarm(farm)
+                    setLicensePanel(false)
+                    setShowCreateStruct(false)
+                    setEditingStructure(null)
+                    setShowEditFarm(false)
+                    setExpandedStructureId(null)
+                  }}
                   style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     padding: '9px 12px', borderRadius: 8, border: '0.5px solid',
@@ -232,10 +258,16 @@ function FarmsTab() {
                     <h2 style={{ fontSize: 16, color: '#111827', marginBottom: 2 }}>{selectedFarm.name}</h2>
                     <p style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'DM Mono, monospace' }}>{selectedFarm.id}</p>
                   </div>
-                  <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+                  {!anyEditorOpen && (
+                    <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
                     <button className="btn-secondary" style={{ fontSize: 11, padding: '5px 10px' }}
-                      onClick={() => setShowEditFarm(!showEditFarm)}>
-                      {showEditFarm ? 'Cancel edit' : 'Edit'}
+                      onClick={() => {
+                        setShowEditFarm(true)
+                        setLicensePanel(false)
+                        setShowCreateStruct(false)
+                        setEditingStructure(null)
+                      }}>
+                      Edit
                     </button>
                     <button
                       style={{
@@ -249,7 +281,12 @@ function FarmsTab() {
                       {isLocked(selectedFarm) ? '🔒 Locked — click to unlock' : '🔓 Unlocked — click to lock'}
                     </button>
                     <button className="btn-secondary" style={{ fontSize: 11, padding: '5px 10px' }}
-                      onClick={() => setLicensePanel(!licensePanel)}>
+                      onClick={() => {
+                        setLicensePanel(true)
+                        setShowEditFarm(false)
+                        setShowCreateStruct(false)
+                        setEditingStructure(null)
+                      }}>
                       License
                     </button>
                     <button
@@ -257,7 +294,8 @@ function FarmsTab() {
                       onClick={() => handleDeleteFarm(selectedFarm)}>
                       Archive farm
                     </button>
-                  </div>
+                    </div>
+                  )}
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
@@ -268,9 +306,6 @@ function FarmsTab() {
                   <InfoCell label="Area" value={selectedFarm.licensedAreaHectares ? `${selectedFarm.licensedAreaHectares} ha` : '—'} />
                   <InfoCell label="Location" value={[selectedFarm.city, selectedFarm.country].filter(Boolean).join(', ') || '—'} />
                   <InfoCell label="Access" value={isLocked(selectedFarm) ? '🔒 Locked' : '🔓 Open'} />
-                  {selectedFarm.defaultBayCount != null && <InfoCell label="Default bays" value={String(selectedFarm.defaultBayCount)} />}
-                  {selectedFarm.defaultBenchesPerBay != null && <InfoCell label="Default benches/bay" value={String(selectedFarm.defaultBenchesPerBay)} />}
-                  {selectedFarm.defaultSpotChecksPerBench != null && <InfoCell label="Default spots/bench" value={String(selectedFarm.defaultSpotChecksPerBench)} />}
                 </div>
               </div>
 
@@ -308,20 +343,44 @@ function FarmsTab() {
                 <div className="card">
                   <div className="card-title">
                     <span>{structLabel}s ({structures.length})</span>
-                    <button className="btn-primary" style={{ fontSize: 11, padding: '4px 10px' }}
-                      onClick={() => { setShowCreateStruct(true); setEditingStructure(null) }}>
-                      + Add {structLabel.toLowerCase()}
-                    </button>
+                    {!showEditFarm && !licensePanel && !structureEditorOpen && (
+                      <button className="btn-primary" style={{ fontSize: 11, padding: '4px 10px' }}
+                        onClick={() => {
+                          setShowCreateStruct(true)
+                          setEditingStructure(null)
+                          setShowEditFarm(false)
+                          setLicensePanel(false)
+                        }}>
+                        + Add {structLabel.toLowerCase()}
+                      </button>
+                    )}
                   </div>
 
+                  {selectedFarm.licensedAreaHectares != null && (
+                    <div style={{
+                      marginTop: 10,
+                      marginBottom: 6,
+                      padding: '8px 10px',
+                      borderRadius: 7,
+                      background: '#f0faf4',
+                      border: '0.5px solid #a7dcbc',
+                      fontSize: 12,
+                      color: '#1e5c3a',
+                    }}>
+                      {`Allocated ${Math.round(totalStructureArea * 100) / 100} ha of ${selectedFarm.licensedAreaHectares} ha. Remaining ${Math.round(Math.max(remainingFarmArea, 0) * 100) / 100} ha.`}
+                    </div>
+                  )}
+
                   {showCreateStruct && (
-                    <StructureForm
+                    <FarmStructureForm
                       farmId={selectedFarm.id}
                       farmType={selectedFarm.structureType ?? 'GREENHOUSE'}
                       farm={selectedFarm}
+                      remainingAreaHectares={remainingFarmArea}
                       onSaved={s => {
                         setStructures(prev => [...prev, s])
                         setShowCreateStruct(false)
+                        setExpandedStructureId(s.id)
                         flash(`${structLabel} created`)
                       }}
                       onCancel={() => setShowCreateStruct(false)}
@@ -330,14 +389,16 @@ function FarmsTab() {
                   )}
 
                   {editingStructure && (
-                    <StructureForm
+                    <FarmStructureForm
                       farmId={selectedFarm.id}
                       farmType={selectedFarm.structureType ?? 'GREENHOUSE'}
                       farm={selectedFarm}
                       existing={editingStructure}
+                      remainingAreaHectares={remainingAreaForEdit(editingStructure)}
                       onSaved={updated => {
                         setStructures(prev => prev.map(s => s.id === updated.id ? updated : s))
                         setEditingStructure(null)
+                        setExpandedStructureId(updated.id)
                         flash(`${structLabel} updated`)
                       }}
                       onCancel={() => setEditingStructure(null)}
@@ -352,48 +413,22 @@ function FarmsTab() {
                       No {structLabel.toLowerCase()}s yet. Click "+ Add {structLabel.toLowerCase()}" to create one.
                     </p>
                   ) : (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 10 }}>
-                      <thead>
-                        <tr style={{ borderBottom: '0.5px solid #e5e7eb' }}>
-                          {['Name', 'Bays', selectedFarm.structureType === 'FIELD' ? 'Spots/bay' : 'Benches/bay', 'Status', ''].map(h => (
-                            <th key={h} style={{ textAlign: 'left', padding: '5px 8px 8px', fontSize: 10, fontWeight: 500, color: '#9ca3af', textTransform: 'uppercase' }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {structures.map(s => {
-                          const isField = selectedFarm.structureType === 'FIELD'
-                          const fb = s as FieldBlockResponse
-                          const gh = s as GreenhouseResponse
-                          return (
-                            <tr key={s.id} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
-                              <td style={{ padding: '8px', fontWeight: 500, color: '#111827' }}>{s.name}</td>
-                              <td style={{ padding: '8px', fontFamily: 'DM Mono, monospace' }}>
-                                {(isField ? fb.bayCount : gh.bayCount) ?? <span style={{ color: '#9ca3af' }}>default</span>}
-                              </td>
-                              <td style={{ padding: '8px', fontFamily: 'DM Mono, monospace' }}>
-                                {(isField ? fb.spotChecksPerBay : gh.benchesPerBay) ?? <span style={{ color: '#9ca3af' }}>default</span>}
-                              </td>
-                              <td style={{ padding: '8px' }}>
-                                <span className={`badge ${s.active ? 'badge-green' : 'badge-gray'}`}>
-                                  {s.active ? 'Active' : 'Inactive'}
-                                </span>
-                              </td>
-                              <td style={{ padding: '8px', display: 'flex', gap: 8 }}>
-                                <button onClick={() => { setEditingStructure(s); setShowCreateStruct(false) }}
-                                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2d7a50', fontSize: 11, fontFamily: 'inherit', padding: 0 }}>
-                                  Edit
-                                </button>
-                                <button onClick={() => handleDeleteStruct(s)}
-                                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e05252', fontSize: 11, fontFamily: 'inherit', padding: 0 }}>
-                                  Delete
-                                </button>
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
+                    <div style={{ marginTop: 10 }}>
+                      <StructureDetailsList
+                        farmType={selectedFarm.structureType ?? 'GREENHOUSE'}
+                        structures={structures}
+                        expandedStructureId={expandedStructureId}
+                        onToggleExpanded={structureId => setExpandedStructureId(current => current === structureId ? null : structureId)}
+                        canEdit={!showEditFarm && !licensePanel && !structureEditorOpen}
+                        onEdit={structure => {
+                          setEditingStructure(structure)
+                          setShowCreateStruct(false)
+                          setShowEditFarm(false)
+                          setLicensePanel(false)
+                        }}
+                        onDelete={structure => void handleDeleteStruct(structure)}
+                      />
+                    </div>
                   )}
                 </div>
               )}
@@ -457,8 +492,8 @@ function FarmsTab() {
       </div>
 
       {showCreateFarm && (
-        <Modal title="Create new farm" onClose={() => setShowCreateFarm(false)}>
-          <CreateFarmForm
+        <Modal title="Create new farm" maxWidth={980} onClose={() => setShowCreateFarm(false)}>
+          <CreateFarmSetupForm
             onCreated={farm => { setFarms(prev => [...prev, farm]); setSelectedFarm(farm); setShowCreateFarm(false); flash(`Farm "${farm.name}" created`) }}
             onCancel={() => setShowCreateFarm(false)}
             onError={msg => flash(msg, true)}
@@ -481,8 +516,9 @@ function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
     address: farm.address ?? '', timezone: farm.timezone ?? '',
     contactName: farm.contactName ?? '', contactEmail: farm.contactEmail ?? '',
     contactPhone: farm.contactPhone ?? '', description: farm.description ?? '',
-    defaultBayCount: farm.defaultBayCount, defaultBenchesPerBay: farm.defaultBenchesPerBay,
-    defaultSpotChecksPerBench: farm.defaultSpotChecksPerBench,
+    licensedAreaHectares: farm.licensedAreaHectares,
+    latitude: farm.latitude,
+    longitude: farm.longitude,
   })
   const s = (k: keyof UpdateFarmRequest, v: string | number | undefined) => setForm(p => ({ ...p, [k]: v }))
 
@@ -506,17 +542,17 @@ function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
         <FormField label="Contact name"><input className="input" value={form.contactName ?? ''} onChange={e => s('contactName', e.target.value)} /></FormField>
         <FormField label="Contact email"><input className="input" type="email" value={form.contactEmail ?? ''} onChange={e => s('contactEmail', e.target.value)} /></FormField>
         <FormField label="Contact phone"><input className="input" value={form.contactPhone ?? ''} onChange={e => s('contactPhone', e.target.value)} /></FormField>
-        <FormField label="Default bays">
-          <input className="input" type="number" min={1} placeholder="Farm default"
-            value={form.defaultBayCount ?? ''} onChange={e => s('defaultBayCount', e.target.value ? Number(e.target.value) : undefined)} />
+        <FormField label="Licensed area (ha)">
+          <input className="input" type="number" min={0} step={0.01}
+            value={form.licensedAreaHectares ?? ''} onChange={e => s('licensedAreaHectares', e.target.value ? Number(e.target.value) : undefined)} />
         </FormField>
-        <FormField label="Default benches/bay">
-          <input className="input" type="number" min={1} placeholder="Farm default"
-            value={form.defaultBenchesPerBay ?? ''} onChange={e => s('defaultBenchesPerBay', e.target.value ? Number(e.target.value) : undefined)} />
+        <FormField label="Latitude">
+          <input className="input" type="number" step="any"
+            value={form.latitude ?? ''} onChange={e => s('latitude', e.target.value ? Number(e.target.value) : undefined)} />
         </FormField>
-        <FormField label="Default spots/bench">
-          <input className="input" type="number" min={1} placeholder="Farm default"
-            value={form.defaultSpotChecksPerBench ?? ''} onChange={e => s('defaultSpotChecksPerBench', e.target.value ? Number(e.target.value) : undefined)} />
+        <FormField label="Longitude">
+          <input className="input" type="number" step="any"
+            value={form.longitude ?? ''} onChange={e => s('longitude', e.target.value ? Number(e.target.value) : undefined)} />
         </FormField>
       </div>
       <FormField label="Address"><input className="input" value={form.address ?? ''} onChange={e => s('address', e.target.value)} /></FormField>
@@ -606,8 +642,7 @@ function CreateFarmForm({ onCreated, onCancel, onError }: { onCreated: (f: FarmR
     subscriptionStatus: 'PENDING_ACTIVATION', licensedAreaHectares: 1,
     subscriptionTier: 'BASIC', structureType: 'GREENHOUSE',
     country: '', city: '', timezone: 'UTC', contactEmail: '',
-    defaultBayCount: undefined, defaultBenchesPerBay: undefined,
-    defaultSpotChecksPerBench: undefined, fieldBlocks: [], greenhouses: [],
+    fieldBlocks: [], greenhouses: [],
   })
   const set = (k: keyof CreateFarmRequest, v: string | number | undefined) => setForm(p => ({ ...p, [k]: v }))
 
@@ -671,8 +706,20 @@ function CreateFarmForm({ onCreated, onCancel, onError }: { onCreated: (f: FarmR
           <input className="input" value={form.contactPhone ?? ''} onChange={e => set('contactPhone', e.target.value)} />
         </FormField>
       </div>
+      <div style={{
+        marginBottom: 14,
+        padding: '8px 10px',
+        borderRadius: 7,
+        background: '#f0faf4',
+        border: '0.5px solid #a7dcbc',
+        fontSize: 12,
+        color: '#1e5c3a',
+      }}>
+        Farm creation starts with zero bays and beds shown. Add greenhouse or field structures explicitly after the farm is created.
+      </div>
+      <div style={{ display: 'none' }}>
       <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 8 }}>Default structure counts (optional — backend uses system defaults if blank)</p>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 14 }}>
+      <div style={{ display: 'none', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 14 }}>
         <FormField label={form.structureType === 'FIELD' ? 'Default bays (rows)' : 'Default bays'}>
           <input className="input" type="number" min={1} placeholder="System default"
             value={form.defaultBayCount ?? ''} onChange={e => set('defaultBayCount', e.target.value ? Number(e.target.value) : undefined)} />
@@ -687,6 +734,7 @@ function CreateFarmForm({ onCreated, onCancel, onError }: { onCreated: (f: FarmR
           <input className="input" type="number" min={1} placeholder="System default"
             value={form.defaultSpotChecksPerBench ?? ''} onChange={e => set('defaultSpotChecksPerBench', e.target.value ? Number(e.target.value) : undefined)} />
         </FormField>
+      </div>
       </div>
       <div style={{ marginBottom: 14 }}>
         <FormField label="Farm owner (User ID) *">
@@ -1417,11 +1465,31 @@ function CacheTab() {
 
 // ─── Shared small components ──────────────────────────────────────────────────
 
-function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+function Modal({
+  title,
+  children,
+  onClose,
+  maxWidth,
+}: {
+  title: string
+  children: React.ReactNode
+  onClose: () => void
+  maxWidth?: number
+}) {
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(0,0,0,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div style={{ background: '#fff', borderRadius: 12, border: '0.5px solid #e5e7eb', boxShadow: '0 8px 32px rgba(0,0,0,0.12)', width: '100%', maxWidth: 560, padding: 24 }}>
+      <div style={{
+        background: '#fff',
+        borderRadius: 12,
+        border: '0.5px solid #e5e7eb',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.12)',
+        width: '100%',
+        maxWidth: maxWidth ?? 560,
+        maxHeight: '90vh',
+        overflowY: 'auto',
+        padding: 24,
+      }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
           <h2 style={{ fontSize: 14, color: '#111827' }}>{title}</h2>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: '#9ca3af', lineHeight: 1, padding: 2 }}>×</button>

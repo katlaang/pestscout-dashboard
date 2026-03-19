@@ -2,14 +2,14 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/hooks/useAuth'
 import { useAlertCount } from '@/hooks/useAlertCount'
 
-const NAV = [
-  { to: '/',           label: 'Dashboard',  icon: DashIcon },
-  { to: '/farms',      label: 'Farms',      icon: FarmIcon },
-  { to: '/sessions',   label: 'Sessions',   icon: ListIcon },
-  { to: '/analytics',  label: 'Analytics',  icon: ChartIcon },
-  { to: '/heatmap',    label: 'Heat maps',  icon: GridIcon },
-  { to: '/alerts',     label: 'Alerts',     icon: BellIcon },
-  { to: '/settings',   label: 'Settings',   icon: GearIcon },
+const ALL_NAV = [
+  { to: '/',           label: 'Dashboard',  icon: DashIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
+  { to: '/farms',      label: 'Farms',      icon: FarmIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
+  { to: '/sessions',   label: 'Sessions',   icon: ListIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER', 'SCOUT'] },
+  { to: '/analytics',  label: 'Analytics',  icon: ChartIcon, roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
+  { to: '/heatmap',    label: 'Heat maps',  icon: GridIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
+  { to: '/alerts',     label: 'Alerts',     icon: BellIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
+  { to: '/settings',   label: 'Settings',   icon: GearIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER', 'SCOUT'] },
 ]
 
 const SUPER_ADMIN_NAV = [
@@ -20,6 +20,8 @@ export default function Sidebar() {
   const { user, logout } = useAuthStore()
   const { count: alertCount } = useAlertCount()
   const navigate = useNavigate()
+  const role = user?.role ?? ''
+  const NAV = ALL_NAV.filter(item => item.roles.includes(role))
 
   const initials = [user?.firstName?.[0], user?.lastName?.[0]]
     .filter(Boolean).join('').toUpperCase() || '?'

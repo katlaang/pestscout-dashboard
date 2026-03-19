@@ -1,8 +1,9 @@
 import axios, { type AxiosInstance, type AxiosError } from 'axios'
 import type {
-  LoginRequest, LoginResponse, UserDto,
+  LoginRequest, LoginResponse, UserDto, ChangePasswordRequest,
   FarmResponse,
-  ScoutingSessionDetailDto,
+  ScoutingSessionDetailDto, ScoutingObservationDto,
+  CreateObservationRequest, UpdateObservationRequest,
   HeatmapResponse,
   DashboardDto, DashboardSummaryDto,
   WeeklyPestTrendDto, SeverityTrendPointDto,
@@ -18,7 +19,16 @@ import type {
   FarmMemberResponse,
   CacheInfo,
   ScoutingSessionAuditDto,
+  SpeciesCode,
 } from '@/types'
+import { getClientSessionId } from '@/utils/clientSession'
+import {
+  clearStoredAuth,
+  getStoredAccessToken,
+  getStoredRefreshToken,
+  storeAuthTokens,
+} from '@/utils/authStorage'
+import { sessionEventStream } from './sessionStream'
 
 // ─── Axios instance ───────────────────────────────────────────────────────────
 
@@ -28,9 +38,28 @@ const api: AxiosInstance = axios.create({
   headers: { 'Content-Type': 'application/json' }
 })
 
+export function buildApiUrl(path: string): string {
+  return `${api.defaults.baseURL}${path}`
+}
+
+function isAuthRefreshRequest(url?: string) {
+  return url?.includes('/api/auth/refresh')
+}
+
+export function isForcedSessionErrorCode(errorCode?: string | null): boolean {
+  return errorCode === 'SESSION_REPLACED' || errorCode === 'SESSION_INVALID'
+}
+
+function logoutReasonForErrorCode(errorCode?: string | null) {
+  if (errorCode === 'SESSION_REPLACED') return 'session_replaced'
+  if (errorCode === 'SESSION_INVALID') return 'session_invalid'
+  return 'session_expired'
+}
+
 // Attach JWT on every request
 api.interceptors.request.use(config => {
-  const token = localStorage.getItem('access_token')
+  const token = getStoredAccessToken()
+  config.headers['X-Client-Session-Id'] = getClientSessionId()
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
@@ -39,19 +68,9 @@ api.interceptors.request.use(config => {
 let isRefreshing = false
 let refreshQueue: Array<(token: string) => void> = []
 
-function forceLogout(reason = 'session_expired') {
-  localStorage.removeItem('access_token')
-  localStorage.removeItem('refresh_token')
-  localStorage.removeItem('token_expires_at')
-  // Clear zustand state without importing the store (avoids circular dep)
-  try {
-    const stored = localStorage.getItem('pestscout-auth')
-    if (stored) {
-      const parsed = JSON.parse(stored)
-      parsed.state = { ...parsed.state, user: null, token: null, refreshToken: null, tokenExpiresAt: null }
-      localStorage.setItem('pestscout-auth', JSON.stringify(parsed))
-    }
-  } catch { /* ignore */ }
+export function forceLogout(reason = 'session_expired') {
+  sessionEventStream.stop()
+  clearStoredAuth()
   window.location.href = `/login?reason=${reason}`
 }
 
@@ -60,11 +79,16 @@ api.interceptors.response.use(
   async (error: AxiosError<ErrorResponse>) => {
     const original = error.config as any
     const status = error.response?.status
-    const errMsg = (error.response?.data as any)?.message ?? ''
+    const errorCode = error.response?.data?.errorCode
+
+    if (status === 401 && isForcedSessionErrorCode(errorCode)) {
+      forceLogout(logoutReasonForErrorCode(errorCode))
+      return Promise.reject(error)
+    }
 
     // 401 from any protected endpoint → try refresh once
-    if (status === 401 && !original._retry) {
-      const storedRefresh = localStorage.getItem('refresh_token')
+    if (status === 401 && !original._retry && !isAuthRefreshRequest(original?.url)) {
+      const storedRefresh = getStoredRefreshToken()
       if (!storedRefresh) { forceLogout('unauthorized'); return Promise.reject(error) }
 
       if (isRefreshing) {
@@ -79,15 +103,9 @@ api.interceptors.response.use(
       original._retry = true
       isRefreshing = true
       try {
-        const res = await axios.post<LoginResponse>(
-          `${api.defaults.baseURL}/api/auth/refresh`,
-          { refreshToken: storedRefresh }
-        )
-        const newToken = res.data.token
-        const expiresAt = Date.now() + res.data.expiresIn * 1000
-        localStorage.setItem('access_token', newToken)
-        localStorage.setItem('refresh_token', res.data.refreshToken)
-        localStorage.setItem('token_expires_at', String(expiresAt))
+        const res = await authApi.refresh(storedRefresh)
+        const newToken = res.token
+        storeAuthTokens(res)
         api.defaults.headers.common.Authorization = `Bearer ${newToken}`
         refreshQueue.forEach(cb => cb(newToken))
         refreshQueue = []
@@ -95,7 +113,8 @@ api.interceptors.response.use(
         return api(original)
       } catch (refreshErr: any) {
         // 400 from /refresh (includes inactivity message) → force logout
-        forceLogout('session_expired')
+        forceLogout(logoutReasonForErrorCode(refreshErr?.response?.data?.errorCode))
+        return Promise.reject(refreshErr)
       } finally {
         isRefreshing = false
       }
@@ -117,8 +136,14 @@ export const authApi = {
   refresh: (refreshToken: string) =>
     api.post<LoginResponse>('/api/auth/refresh', { refreshToken }).then(r => r.data),
 
+  claimSession: (refreshToken: string) =>
+    api.post<LoginResponse>('/api/auth/session/claim', { refreshToken }).then(r => r.data),
+
   resetPassword: (body: ResetPasswordRequest) =>
     api.post('/api/auth/reset-password', body).then(r => r.data),
+
+  changePassword: (body: ChangePasswordRequest) =>
+    api.post('/api/auth/change-password', body).then(r => r.data),
 
   reactivateUser: (userId: string) =>
     api.post<UserDto>(`/api/auth/users/${userId}/reactivate`).then(r => r.data),
@@ -144,17 +169,19 @@ export interface SessionTargetRequest {
   includeAllBenches?: boolean     // default true
   bayTags?: string[]
   benchTags?: string[]
+  areaHectares?: number | null
 }
 
 /** POST /api/scouting/sessions — manager creates, must supply scoutId + targets */
 export interface CreateSessionRequest {
   farmId: string
-  scoutId?: string                 // optional — backend falls back to farm scout
-  targets?: SessionTargetRequest[] // optional — backend auto-resolves all structures
+  scoutId?: string                 // optional - backend falls back to farm scout
+  targets?: SessionTargetRequest[] // optional - backend auto-resolves all structures
   sessionDate: string              // ISO local date
   weekNumber?: number
   crop?: string
   variety?: string
+  surveySpeciesCodes?: SpeciesCode[]
   notes?: string
   actorName?: string
   deviceId?: string
@@ -191,9 +218,16 @@ export interface UpdateSessionRequest {
   weekNumber?: number
   crop?: string
   variety?: string
+  surveySpeciesCodes?: SpeciesCode[]
+  targets?: SessionTargetRequest[]
   notes?: string
+  temperatureCelsius?: number
+  relativeHumidityPercent?: number
+  observationTime?: string
+  weatherNotes?: string
   version?: number
   actorName?: string
+  scoutId?: string    // assigning a scout promotes DRAFT → NEW
 }
 
 /** POST /api/scouting/sessions/{id}/remote-start-request — SUPER_ADMIN notifies scout to start */
@@ -217,6 +251,9 @@ export const sessionsApi = {
 
   update: (sessionId: string, body: UpdateSessionRequest) =>
     api.put<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}`, body).then(r => r.data),
+
+  delete: (sessionId: string) =>
+    api.delete(`/api/scouting/sessions/${sessionId}`).then(() => undefined),
 
   /**
    * SCOUT direct start. Always available to the assigned scout regardless of whether
@@ -258,9 +295,29 @@ export const sessionsApi = {
   reopen: (sessionId: string, body?: ReopenSessionRequest) =>
     api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/reopen`, body ?? {}).then(r => r.data),
 
+  /**
+   * SCOUT accepts a remote-start request from a super admin.
+   * POST /api/scouting/sessions/{id}/accept-remote-start
+   */
+  acceptRemoteStart: (sessionId: string) =>
+    api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/accept-remote-start`).then(r => r.data),
+
   /** GET /api/scouting/sessions/{id}/audits — returns ordered audit trail */
   audits: (sessionId: string): Promise<ScoutingSessionAuditDto[]> =>
     api.get<ScoutingSessionAuditDto[]>(`/api/scouting/sessions/${sessionId}/audits`).then(r => r.data),
+}
+
+// ─── Observations ─────────────────────────────────────────────────────────────
+
+export const observationsApi = {
+  create: (sessionId: string, body: CreateObservationRequest) =>
+    api.post<ScoutingObservationDto>(`/api/scouting/sessions/${sessionId}/observations`, body).then(r => r.data),
+
+  update: (sessionId: string, obsId: string, body: UpdateObservationRequest) =>
+    api.put<ScoutingObservationDto>(`/api/scouting/sessions/${sessionId}/observations/${obsId}`, body).then(r => r.data),
+
+  delete: (sessionId: string, obsId: string) =>
+    api.delete(`/api/scouting/sessions/${sessionId}/observations/${obsId}`).then(r => r.data),
 }
 
 // ─── Analytics ────────────────────────────────────────────────────────────────
@@ -276,9 +333,9 @@ export const analyticsApi = {
       params: { farmId }
     }).then(r => r.data),
 
-  heatmap: (farmId: string, week: number, year: number) =>
-    api.get<HeatmapResponse>(`/api/farms/${farmId}/heatmap`, {
-      params: { week, year }
+  heatmap: (farmId: string, month: number, year: number) =>
+    api.get<HeatmapResponse>('/api/analytics/heatmap/monthly', {
+      params: { farmId, month, year }
     }).then(r => r.data),
 
   weeklyTrends: (farmId: string) =>
@@ -311,6 +368,12 @@ export const adminUsersApi = {
       Array.isArray(r.data) ? r.data : (r.data as any).content ?? []
     ),
 
+  // GET /api/auth/users/role/SCOUT?farmId={farmId} — scouts only for session assignee picker
+  listScouts: (farmId: string) =>
+    api.get<UserDto[]>('/api/auth/users/role/SCOUT', { params: { farmId } }).then(r =>
+      Array.isArray(r.data) ? r.data : (r.data as any).content ?? []
+    ),
+
   get: (userId: string) =>
     api.get<UserDto>(`/api/auth/users/${userId}`).then(r => r.data),
 
@@ -339,6 +402,8 @@ function farmToUpdateBody(farm: FarmResponse, overrides: UpdateFarmRequest = {})
     contactEmail:              farm.contactEmail,
     contactPhone:              farm.contactPhone,
     timezone:                  farm.timezone,
+    latitude:                  farm.latitude,
+    longitude:                 farm.longitude,
     ownerId:                   farm.ownerId,
     defaultBayCount:           farm.defaultBayCount,
     defaultBenchesPerBay:      farm.defaultBenchesPerBay,
@@ -391,10 +456,10 @@ export const adminFarmsApi = {
     api.post<GreenhouseResponse>(`/api/farms/${farmId}/greenhouses`, body).then(r => r.data),
 
   updateGreenhouse: (farmId: string, ghId: string, body: UpdateGreenhouseRequest) =>
-    api.put<GreenhouseResponse>(`/api/farms/${farmId}/greenhouses/${ghId}`, body).then(r => r.data),
+    api.put<GreenhouseResponse>(`/api/greenhouses/${ghId}`, body).then(r => r.data),
 
   deleteGreenhouse: (farmId: string, ghId: string) =>
-    api.delete(`/api/farms/${farmId}/greenhouses/${ghId}`).then(r => r.data),
+    api.delete(`/api/greenhouses/${ghId}`).then(r => r.data),
 
   // ── Field blocks (FIELD farms) ───────────────────────────────────────────────
   listFieldBlocks: (farmId: string) =>
@@ -404,10 +469,10 @@ export const adminFarmsApi = {
     api.post<FieldBlockResponse>(`/api/farms/${farmId}/field-blocks`, body).then(r => r.data),
 
   updateFieldBlock: (farmId: string, blockId: string, body: UpdateFieldBlockRequest) =>
-    api.put<FieldBlockResponse>(`/api/farms/${farmId}/field-blocks/${blockId}`, body).then(r => r.data),
+    api.put<FieldBlockResponse>(`/api/field-blocks/${blockId}`, body).then(r => r.data),
 
   deleteFieldBlock: (farmId: string, blockId: string) =>
-    api.delete(`/api/farms/${farmId}/field-blocks/${blockId}`).then(r => r.data),
+    api.delete(`/api/field-blocks/${blockId}`).then(r => r.data),
 
   listMembers: (farmId: string) =>
     api.get<FarmMemberResponse[]>(`/api/farms/${farmId}/members`).then(r => r.data),

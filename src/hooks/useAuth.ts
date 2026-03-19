@@ -1,7 +1,8 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
-import type { UserDto } from '@/types'
+import { createJSONStorage, persist } from 'zustand/middleware'
+import type { LoginResponse, UserDto } from '@/types'
 import { authApi } from '@/services/api'
+import { AUTH_STORE_KEY, clearStoredAuth, getStoredRefreshToken, storeAuthTokens } from '@/utils/authStorage'
 
 interface AuthState {
   user: UserDto | null
@@ -11,6 +12,8 @@ interface AuthState {
   isLoading: boolean
   error: string | null
   login: (email: string, password: string) => Promise<void>
+  completeAuth: (response: LoginResponse) => Promise<void>
+  refreshSession: (refreshTokenOverride?: string) => Promise<string>
   logout: (reason?: string) => void
   updateUser: (user: UserDto) => void
   clearError: () => void
@@ -18,7 +21,7 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       user: null,
       token: null,
       refreshToken: null,
@@ -26,21 +29,44 @@ export const useAuthStore = create<AuthState>()(
       isLoading: false,
       error: null,
 
+      completeAuth: async (response) => {
+        const expiresAt = storeAuthTokens(response)
+        set({
+          token: response.token,
+          refreshToken: response.refreshToken,
+          tokenExpiresAt: expiresAt,
+        })
+        const me = await authApi.me()
+        set({
+          user: me,
+          token: response.token,
+          refreshToken: response.refreshToken,
+          tokenExpiresAt: expiresAt,
+          isLoading: false,
+          error: null,
+        })
+      },
+
+      refreshSession: async (refreshTokenOverride) => {
+        const refreshToken = refreshTokenOverride ?? get().refreshToken ?? getStoredRefreshToken()
+        if (!refreshToken) throw new Error('No refresh token available')
+
+        const response = await authApi.refresh(refreshToken)
+        const expiresAt = storeAuthTokens(response)
+        set({
+          token: response.token,
+          refreshToken: response.refreshToken,
+          tokenExpiresAt: expiresAt,
+          error: null,
+        })
+        return response.token
+      },
+
       login: async (email, password) => {
         set({ isLoading: true, error: null })
         try {
           const res = await authApi.login({ email, password })
-          const expiresAt = Date.now() + res.expiresIn * 1000
-          localStorage.setItem('access_token', res.token)
-          localStorage.setItem('refresh_token', res.refreshToken)
-          localStorage.setItem('token_expires_at', String(expiresAt))
-          set({
-            user: res.user,
-            token: res.token,
-            refreshToken: res.refreshToken,
-            tokenExpiresAt: expiresAt,
-            isLoading: false,
-          })
+          await get().completeAuth(res)
         } catch (err: any) {
           const msg = err?.response?.data?.message ?? 'Invalid email or password'
           set({ error: msg, isLoading: false })
@@ -48,9 +74,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: (reason?: string) => {
-        localStorage.removeItem('access_token')
-        localStorage.removeItem('refresh_token')
-        localStorage.removeItem('token_expires_at')
+        clearStoredAuth()
         set({ user: null, token: null, refreshToken: null, tokenExpiresAt: null })
         // Navigate happens in the caller (IdleTimer or interceptor) so we just clear state here
         const url = reason ? `/login?reason=${reason}` : '/login'
@@ -62,7 +86,8 @@ export const useAuthStore = create<AuthState>()(
       clearError: () => set({ error: null }),
     }),
     {
-      name: 'pestscout-auth',
+      name: AUTH_STORE_KEY,
+      storage: createJSONStorage(() => sessionStorage),
       partialize: state => ({
         user: state.user,
         token: state.token,

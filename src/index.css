@@ -86,6 +86,18 @@
     color: #d97706;
   }
 
+  .badge-yellow {
+    background: #fffbeb;
+    border-color: #fcd34d;
+    color: #b45309;
+  }
+
+  .badge-orange {
+    background: #fff7ed;
+    border-color: #fdba74;
+    color: #c2410c;
+  }
+
   .badge-red {
     background: #fff5f5;
     border-color: #fca5a5;
@@ -96,6 +108,19 @@
     background: #f9fafb;
     border-color: #e5e7eb;
     color: #6b7280;
+  }
+
+  .badge-striped {
+    background:
+      repeating-linear-gradient(
+        135deg,
+        #f0faf4 0,
+        #f0faf4 8px,
+        #fff5f5 8px,
+        #fff5f5 16px
+      );
+    border-color: #fca5a5;
+    color: #7f1d1d;
   }
 
   .btn-primary {

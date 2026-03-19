@@ -64,13 +64,13 @@ export const SPECIES_LABELS: Record<SpeciesCode, string> = {
 // ─── Session status ───────────────────────────────────────────────────────────
 
 export const SESSION_STATUS_BADGE: Record<SessionStatus, { label: string; cls: string }> = {
-  DRAFT:       { label: 'Draft',       cls: 'badge-gray' },
+  DRAFT:       { label: 'Draft',       cls: 'badge-yellow' },
   NEW:         { label: 'New',         cls: 'badge-gray' },
-  IN_PROGRESS: { label: 'In progress', cls: 'badge-amber' },
-  SUBMITTED:   { label: 'Submitted',   cls: 'badge-amber' },
-  REOPENED:    { label: 'Reopened',    cls: 'badge-amber' },
+  IN_PROGRESS: { label: 'In progress', cls: 'badge-orange' },
+  SUBMITTED:   { label: 'Submitted',   cls: 'badge-green' },
+  REOPENED:    { label: 'Reopened',    cls: 'badge-striped' },
   COMPLETED:   { label: 'Completed',   cls: 'badge-green' },
-  INCOMPLETE:  { label: 'Incomplete',  cls: 'badge-red' },
+  INCOMPLETE:  { label: 'Incomplete',  cls: 'badge-orange' },
   CANCELLED:   { label: 'Cancelled',   cls: 'badge-gray' },
 }
 

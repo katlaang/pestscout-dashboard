@@ -1,7 +1,14 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { farmsApi, adminFarmsApi } from '@/services/api'
-import type { FarmResponse, UpdateFarmRequest } from '@/types'
+import StructureDetailsList from '@/components/farms/StructureDetailsList'
+import FarmStructureForm from '@/components/farms/StructureForm'
+import type {
+  FarmResponse,
+  UpdateFarmRequest,
+  GreenhouseResponse,
+  FieldBlockResponse,
+} from '@/types'
 import { formatDate } from '@/utils'
 import { useAuthStore } from '@/hooks/useAuth'
 
@@ -9,6 +16,15 @@ export default function FarmsPage() {
   const [farms, setFarms] = useState<FarmResponse[]>([])
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [expandedFarmId, setExpandedFarmId] = useState<string | null>(null)
+  const [expandedStructureIds, setExpandedStructureIds] = useState<Record<string, string | null>>({})
+  const [structureLoadingFarmId, setStructureLoadingFarmId] = useState<string | null>(null)
+  const [structuresByFarm, setStructuresByFarm] = useState<Record<string, (GreenhouseResponse | FieldBlockResponse)[]>>({})
+  const [showCreateStructureFarmId, setShowCreateStructureFarmId] = useState<string | null>(null)
+  const [editingStructure, setEditingStructure] = useState<{
+    farmId: string
+    structure: GreenhouseResponse | FieldBlockResponse
+  } | null>(null)
   const [banner, setBanner] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
   const navigate = useNavigate()
   const { user } = useAuthStore()
@@ -30,6 +46,60 @@ export default function FarmsPage() {
   function flash(msg: string, type: 'success' | 'error' = 'success') {
     setBanner({ type, msg })
     setTimeout(() => setBanner(null), 3000)
+  }
+
+  async function loadStructures(farm: FarmResponse) {
+    if (farm.structureType === 'OTHER') {
+      setStructuresByFarm(prev => ({ ...prev, [farm.id]: [] }))
+      return
+    }
+
+    setStructureLoadingFarmId(farm.id)
+    try {
+      const structures = farm.structureType === 'FIELD'
+        ? await adminFarmsApi.listFieldBlocks(farm.id)
+        : await adminFarmsApi.listGreenhouses(farm.id)
+      setStructuresByFarm(prev => ({ ...prev, [farm.id]: structures }))
+    } catch {
+      flash('Could not load structures for this farm.', 'error')
+      setStructuresByFarm(prev => ({ ...prev, [farm.id]: [] }))
+    } finally {
+      setStructureLoadingFarmId(current => current === farm.id ? null : current)
+    }
+  }
+
+  async function toggleStructures(farm: FarmResponse) {
+    const nextExpanded = expandedFarmId === farm.id ? null : farm.id
+    setExpandedFarmId(nextExpanded)
+    setShowCreateStructureFarmId(null)
+    setEditingStructure(null)
+
+    if (nextExpanded === farm.id && structuresByFarm[farm.id] == null) {
+      await loadStructures(farm)
+    }
+  }
+
+  async function handleDeleteStructure(farm: FarmResponse, structure: GreenhouseResponse | FieldBlockResponse) {
+    if (!confirm(`Delete "${structure.name}"? This cannot be undone.`)) return
+
+    try {
+      if (farm.structureType === 'FIELD') {
+        await adminFarmsApi.deleteFieldBlock(farm.id, structure.id)
+      } else {
+        await adminFarmsApi.deleteGreenhouse(farm.id, structure.id)
+      }
+      setStructuresByFarm(prev => ({
+        ...prev,
+        [farm.id]: (prev[farm.id] ?? []).filter(item => item.id !== structure.id),
+      }))
+      setExpandedStructureIds(prev => ({
+        ...prev,
+        [farm.id]: prev[farm.id] === structure.id ? null : prev[farm.id] ?? null,
+      }))
+      flash('Structure deleted')
+    } catch (error: any) {
+      flash(error?.response?.data?.message ?? 'Failed to delete structure', 'error')
+    }
   }
 
   const tierColors: Record<string, { bg: string; border: string; color: string }> = {
@@ -68,10 +138,28 @@ export default function FarmsPage() {
             const tier = tierColors[farm.subscriptionTier] ?? tierColors.BASIC
             const isExpired = farm.licenseExpiryDate && new Date(farm.licenseExpiryDate) < new Date()
             const isEditing = editingId === farm.id
+            const isExpanded = expandedFarmId === farm.id
+            const structures = structuresByFarm[farm.id] ?? []
+            const expandedStructureId = expandedStructureIds[farm.id] ?? null
+            const isStructureEditorOpen = showCreateStructureFarmId === farm.id || editingStructure?.farmId === farm.id
+            const structureArea = structures.reduce((sum, structure) => {
+              const area = 'areaHectares' in structure ? Number(structure.areaHectares ?? 0) : 0
+              return sum + (Number.isFinite(area) ? area : 0)
+            }, 0)
+            const remainingArea = farm.licensedAreaHectares != null
+              ? Math.max(farm.licensedAreaHectares - structureArea, 0)
+              : Number.POSITIVE_INFINITY
 
             return (
               <div key={farm.id} className="card">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+                <div
+                  onClick={event => {
+                    const target = event.target as HTMLElement
+                    if (target.closest('button')) return
+                    void toggleStructures(farm)
+                  }}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap', cursor: 'pointer' }}
+                >
 
                   {/* Left: identity */}
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flex: 1, minWidth: 0 }}>
@@ -112,11 +200,16 @@ export default function FarmsPage() {
                       >
                         Dashboard →
                       </button>
-                      {isSuperAdmin && (
+                      {isSuperAdmin && !isStructureEditorOpen && (
                         <button
                           className="btn-secondary"
                           style={{ fontSize: 12, padding: '5px 12px' }}
-                          onClick={() => setEditingId(isEditing ? null : farm.id)}
+                          onClick={() => {
+                            setEditingId(isEditing ? null : farm.id)
+                            setShowCreateStructureFarmId(null)
+                            setEditingStructure(null)
+                            setExpandedFarmId(farm.id)
+                          }}
                         >
                           {isEditing ? 'Cancel' : 'Edit'}
                         </button>
@@ -152,6 +245,118 @@ export default function FarmsPage() {
                     onCancel={() => setEditingId(null)}
                     onError={msg => flash(msg, 'error')}
                   />
+                )}
+
+                {isExpanded && farm.structureType !== 'OTHER' && (
+                  <div style={{ marginTop: 16, paddingTop: 16, borderTop: '0.5px solid #f3f4f6' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginBottom: 12 }}>
+                      <DetailCard label="Layout" value={farm.structureType ?? '—'} />
+                      <DetailCard label="Address" value={farm.address || '—'} />
+                      <DetailCard label="Timezone" value={farm.timezone || '—'} />
+                      <DetailCard label="Contact" value={farm.contactName || '—'} />
+                      <DetailCard label="Email" value={farm.contactEmail || '—'} />
+                      <DetailCard label="Phone" value={farm.contactPhone || '—'} />
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+                      <div>
+                        <p style={{ fontSize: 12, fontWeight: 500, color: '#111827' }}>
+                          {farm.structureType === 'FIELD' ? 'Field blocks' : 'Greenhouses'} ({structures.length})
+                        </p>
+                        {farm.licensedAreaHectares != null && (
+                          <p style={{ fontSize: 11, color: '#6b7280' }}>
+                            {`Allocated ${Math.round(structureArea * 100) / 100} ha of ${farm.licensedAreaHectares} ha. Remaining ${Math.round(Math.max(remainingArea, 0) * 100) / 100} ha.`}
+                          </p>
+                        )}
+                      </div>
+                      {isSuperAdmin && !isEditing && !isStructureEditorOpen && (
+                        <button
+                          className="btn-primary"
+                          style={{ fontSize: 12, padding: '5px 12px' }}
+                          onClick={() => {
+                            setShowCreateStructureFarmId(current => current === farm.id ? null : farm.id)
+                            setEditingStructure(null)
+                            setEditingId(null)
+                          }}
+                        >
+                          + Add {farm.structureType === 'FIELD' ? 'field block' : 'greenhouse'}
+                        </button>
+                      )}
+                    </div>
+
+                    {showCreateStructureFarmId === farm.id && (
+                      <FarmStructureForm
+                        farmId={farm.id}
+                        farmType={farm.structureType ?? 'GREENHOUSE'}
+                        farm={farm}
+                        remainingAreaHectares={remainingArea}
+                        onSaved={structure => {
+                          setStructuresByFarm(prev => ({
+                            ...prev,
+                            [farm.id]: [...(prev[farm.id] ?? []), structure],
+                          }))
+                          setExpandedStructureIds(prev => ({ ...prev, [farm.id]: structure.id }))
+                          setShowCreateStructureFarmId(null)
+                          flash(`${farm.structureType === 'FIELD' ? 'Field block' : 'Greenhouse'} created`)
+                        }}
+                        onCancel={() => setShowCreateStructureFarmId(null)}
+                        onError={msg => flash(msg, 'error')}
+                      />
+                    )}
+
+                    {editingStructure?.farmId === farm.id && (
+                      <FarmStructureForm
+                        farmId={farm.id}
+                        farmType={farm.structureType ?? 'GREENHOUSE'}
+                        farm={farm}
+                        existing={editingStructure.structure}
+                        remainingAreaHectares={farm.licensedAreaHectares != null
+                          ? Math.max(
+                              farm.licensedAreaHectares - (
+                                structureArea - Number(('areaHectares' in editingStructure.structure ? editingStructure.structure.areaHectares : 0) ?? 0)
+                              ),
+                              0,
+                            )
+                          : Number.POSITIVE_INFINITY}
+                        onSaved={structure => {
+                          setStructuresByFarm(prev => ({
+                            ...prev,
+                            [farm.id]: (prev[farm.id] ?? []).map(item => item.id === structure.id ? structure : item),
+                          }))
+                          setExpandedStructureIds(prev => ({ ...prev, [farm.id]: structure.id }))
+                          setEditingStructure(null)
+                          flash('Structure updated')
+                        }}
+                        onCancel={() => setEditingStructure(null)}
+                        onError={msg => flash(msg, 'error')}
+                      />
+                    )}
+
+                    {structureLoadingFarmId === farm.id ? (
+                      <p style={{ color: '#9ca3af', fontSize: 12 }}>Loading structures...</p>
+                    ) : structures.length === 0 ? (
+                      <p style={{ color: '#9ca3af', fontSize: 12 }}>
+                        No {farm.structureType === 'FIELD' ? 'field blocks' : 'greenhouses'} yet.
+                      </p>
+                    ) : (
+                      <StructureDetailsList
+                        farmType={farm.structureType ?? 'GREENHOUSE'}
+                        structures={structures}
+                        expandedStructureId={expandedStructureId}
+                        onToggleExpanded={structureId => setExpandedStructureIds(prev => ({
+                          ...prev,
+                          [farm.id]: prev[farm.id] === structureId ? null : structureId,
+                        }))}
+                        canEdit={isSuperAdmin && !isEditing && !isStructureEditorOpen}
+                        onEdit={structure => {
+                          setEditingStructure({ farmId: farm.id, structure })
+                          setShowCreateStructureFarmId(null)
+                          setEditingId(null)
+                        }}
+                        onDelete={structure => void handleDeleteStructure(farm, structure)}
+                      />
+                    )}
+                  </div>
                 )}
               </div>
             )
@@ -261,6 +466,15 @@ function MetaItem({ label, value, color }: { label: string; value: string; color
     <div style={{ textAlign: 'right' }}>
       <p style={{ fontSize: 10, color: '#9ca3af' }}>{label}</p>
       <p style={{ fontSize: 12, color: color ?? '#374151' }}>{value}</p>
+    </div>
+  )
+}
+
+function DetailCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ background: '#f9fafb', border: '0.5px solid #e5e7eb', borderRadius: 8, padding: '10px 12px' }}>
+      <p style={{ fontSize: 10, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 4 }}>{label}</p>
+      <p style={{ fontSize: 12, color: '#374151' }}>{value}</p>
     </div>
   )
 }

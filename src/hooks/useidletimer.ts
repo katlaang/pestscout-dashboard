@@ -10,7 +10,7 @@ const EVENTS = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'] as cons
  * Silent refresh is only attempted while the user is active (via resetIdleTimer).
  */
 export function useIdleTimer() {
-  const { user, logout, token, refreshToken, tokenExpiresAt } = useAuthStore()
+  const { user, logout, token, refreshToken, tokenExpiresAt, refreshSession } = useAuthStore()
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -26,20 +26,7 @@ export function useIdleTimer() {
 
     refreshTimer.current = setTimeout(async () => {
       try {
-        const { default: axios } = await import('axios')
-        const baseURL = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
-        const res = await axios.post(`${baseURL}/api/auth/refresh`, {
-          refreshToken,
-        })
-        const expiresAt = Date.now() + res.data.expiresIn * 1000
-        localStorage.setItem('access_token', res.data.token)
-        localStorage.setItem('refresh_token', res.data.refreshToken)
-        localStorage.setItem('token_expires_at', String(expiresAt))
-        useAuthStore.setState({
-          token: res.data.token,
-          refreshToken: res.data.refreshToken,
-          tokenExpiresAt: expiresAt,
-        })
+        await refreshSession(refreshToken)
         scheduleRefresh() // reschedule for the new token
       } catch {
         // Refresh failed while active — force logout
@@ -76,7 +63,7 @@ export function useIdleTimer() {
         window.removeEventListener(event, resetIdleTimer)
       )
     }
-  }, [user, token, tokenExpiresAt, refreshToken]) // restart when auth state changes
+  }, [user, token, tokenExpiresAt, refreshToken, refreshSession]) // restart when auth state changes
 
   // Intentionally not returning anything — this hook is purely for side effects
 }
