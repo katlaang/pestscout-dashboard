@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import { useEffect } from 'react'
 import { Toaster } from 'react-hot-toast'
 import AppLayout from '@/components/layout/AppLayout'
 import ProtectedRoute from '@/components/layout/ProtectedRoute'
@@ -15,6 +16,7 @@ import ProfilePage from '@/pages/ProfilePage'
 import SuperAdminPage from '@/pages/SuperAdminPage'
 import { useIdleTimer } from '@/hooks/useidletimer'
 import { useAuthStore } from '@/hooks/useAuth'
+import { setAppNavigate } from '@/utils/navigation'
 
 // Wraps protected routes and activates the idle timer
 function AuthenticatedApp() {
@@ -29,9 +31,21 @@ function RootRedirect() {
   return <DashboardPage />
 }
 
+function NavigationBridge() {
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    setAppNavigate(navigate)
+    return () => setAppNavigate(null)
+  }, [navigate])
+
+  return null
+}
+
 export default function App() {
   return (
     <BrowserRouter>
+      <NavigationBridge />
       <Toaster
         position="top-right"
         toastOptions={{

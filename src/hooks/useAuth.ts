@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import type { LoginResponse, UserDto } from '@/types'
 import { authApi } from '@/services/api'
 import { AUTH_STORE_KEY, clearStoredAuth, getStoredRefreshToken, storeAuthTokens } from '@/utils/authStorage'
+import { navigateToLogin } from '@/utils/navigation'
 
 interface AuthState {
   user: UserDto | null
@@ -76,9 +77,7 @@ export const useAuthStore = create<AuthState>()(
       logout: (reason?: string) => {
         clearStoredAuth()
         set({ user: null, token: null, refreshToken: null, tokenExpiresAt: null })
-        // Navigate happens in the caller (IdleTimer or interceptor) so we just clear state here
-        const url = reason ? `/login?reason=${reason}` : '/login'
-        window.location.href = url
+        navigateToLogin(reason)
       },
 
       updateUser: (user: UserDto) => set({ user }),

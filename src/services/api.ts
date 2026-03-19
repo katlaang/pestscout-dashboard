@@ -33,6 +33,7 @@ import {
   getStoredRefreshToken,
   storeAuthTokens,
 } from '@/utils/authStorage'
+import { navigateToLogin } from '@/utils/navigation'
 import { sessionEventStream } from './sessionStream'
 
 // ─── Axios instance ───────────────────────────────────────────────────────────
@@ -76,7 +77,7 @@ let refreshQueue: Array<(token: string) => void> = []
 export function forceLogout(reason = 'session_expired') {
   sessionEventStream.stop()
   clearStoredAuth()
-  window.location.href = `/login?reason=${reason}`
+  navigateToLogin(reason)
 }
 
 api.interceptors.response.use(
