@@ -49,7 +49,7 @@ export default function GreenhouseBayEditor({
       })
       return next
     })
-  }, [bays])
+  }, [bays.length])
 
   const totalBeds = useMemo(
     () => bays.reduce((sum, bay) => sum + Math.max(1, Number(bay.bedCount ?? 1)), 0),
@@ -142,7 +142,7 @@ export default function GreenhouseBayEditor({
 
               return (
                 <div
-                  key={`${index}-${bay.bayTag}`}
+                  key={`bay-${index}`}
                   style={{
                     border: '0.5px solid #e5e7eb',
                     borderRadius: 8,

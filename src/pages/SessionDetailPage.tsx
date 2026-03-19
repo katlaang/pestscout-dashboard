@@ -46,6 +46,7 @@ export default function SessionDetailPage() {
   const [plannerStructures, setPlannerStructures] = useState<(GreenhouseResponse | FieldBlockResponse)[]>([])
   const [plannerTargets, setPlannerTargets] = useState<SessionPlannerTargetDraft[]>([])
   const [surveySpeciesCodes, setSurveySpeciesCodes] = useState<SpeciesCode[]>([])
+  const [customSurveySpeciesIds, setCustomSurveySpeciesIds] = useState<string[]>([])
   const [draftScoutId,  setDraftScoutId]  = useState('')
   const [draftDate,     setDraftDate]     = useState('')
   const [draftWeek,     setDraftWeek]     = useState<number>(1)
@@ -92,6 +93,7 @@ export default function SessionDetailPage() {
     setDraftVariety(session.variety ?? '')
     setDraftNotes(session.notes ?? '')
     setSurveySpeciesCodes(session.surveySpeciesCodes ?? [])
+    setCustomSurveySpeciesIds(session.customSurveySpeciesIds ?? [])
     setPlannerTargets(
       session.sections.map(section => ({
         structureId: section.greenhouseId ?? section.fieldBlockId ?? section.targetId,
@@ -139,12 +141,17 @@ export default function SessionDetailPage() {
       const hasGreenhouseTargets = session.sections.some(section => !!section.greenhouseId)
       const hasFieldTargets = session.sections.some(section => !!section.fieldBlockId)
 
-      if (hasGreenhouseTargets || (!hasFieldTargets && greenhouses.length > 0)) {
+      if (hasGreenhouseTargets || (greenhouses.length > 0 && fieldBlocks.length === 0)) {
         setPlannerStructures(greenhouses)
         return
       }
 
-      setPlannerStructures(fieldBlocks)
+      if (hasFieldTargets || (fieldBlocks.length > 0 && greenhouses.length === 0)) {
+        setPlannerStructures(fieldBlocks)
+        return
+      }
+
+      setPlannerStructures([...greenhouses, ...fieldBlocks])
     })
   }, [session?.farmId, session?.status, session?.sections, isManager])
 
@@ -238,15 +245,21 @@ export default function SessionDetailPage() {
         crop:        draftCrop    || undefined,
         variety:     draftVariety || undefined,
         surveySpeciesCodes: surveySpeciesCodes.length > 0 ? surveySpeciesCodes : undefined,
+        customSurveySpeciesIds: customSurveySpeciesIds.length > 0 ? customSurveySpeciesIds : undefined,
         targets: plannerTargets.map(target => ({
           ...(target.structureType === 'FIELD'
-            ? { fieldBlockId: target.structureId }
-            : { greenhouseId: target.structureId }),
-          includeAllBays: target.includeAllBays,
-          includeAllBenches: target.includeAllBenches,
-          bayTags: target.includeAllBays ? [] : target.bayTags,
-          benchTags: target.includeAllBenches ? [] : target.benchTags,
-          areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
+            ? {
+                fieldBlockId: target.structureId,
+                areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
+              }
+            : {
+                greenhouseId: target.structureId,
+                includeAllBays: target.includeAllBays,
+                includeAllBenches: target.includeAllBenches,
+                bayTags: target.includeAllBays ? [] : target.bayTags,
+                benchTags: target.includeAllBenches ? [] : target.benchTags,
+                areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
+              }),
         })),
         notes:       draftNotes   || undefined,
         version:     session.version,
@@ -499,11 +512,19 @@ export default function SessionDetailPage() {
             </div>
 
             <SessionPlannerFields
+              farmId={session.farmId}
+              farmStructureType={plannerTargets.some(target => target.structureType === 'GREENHOUSE')
+                ? 'GREENHOUSE'
+                : plannerTargets.some(target => target.structureType === 'FIELD')
+                  ? 'FIELD'
+                  : undefined}
               structures={plannerStructures}
               targets={plannerTargets}
               surveySpeciesCodes={surveySpeciesCodes}
+              customSurveySpeciesIds={customSurveySpeciesIds}
               onTargetsChange={setPlannerTargets}
               onSurveySpeciesCodesChange={setSurveySpeciesCodes}
+              onCustomSurveySpeciesIdsChange={setCustomSurveySpeciesIds}
               readOnly={plannerReadOnly}
             />
           </div>
@@ -598,7 +619,12 @@ export default function SessionDetailPage() {
             onClick={() => {
               const rows = allObs.map(o => ({
                 bay: o.bayTag ?? o.bayIndex, bed: o.benchTag ?? o.benchIndex,
-                spot: o.spotIndex, species: SPECIES_LABELS[o.speciesCode] ?? o.speciesCode,
+                spot: o.spotIndex,
+                species: o.customSpeciesName
+                  ?? (o.speciesCode ? SPECIES_LABELS[o.speciesCode] ?? o.speciesCode : undefined)
+                  ?? o.customSpeciesCode
+                  ?? o.customSpeciesId
+                  ?? 'Unknown',
                 category: o.category, count: o.count, notes: o.notes ?? '',
               }))
               exportToCsv(`session-${sessionId}.csv`, rows)
@@ -728,6 +754,7 @@ export default function SessionDetailPage() {
               isEditable={isEditable}
               farmId={session.farmId}
               surveySpeciesCodes={session.surveySpeciesCodes}
+              customSurveySpeciesIds={session.customSurveySpeciesIds}
               onChanged={() => sessionsApi.get(sessionId!).then(setSession).catch(() => {})}
             />
           </div>

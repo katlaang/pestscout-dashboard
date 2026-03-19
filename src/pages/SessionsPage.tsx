@@ -273,10 +273,6 @@ export default function SessionsPage() {
             flash(session.status === 'DRAFT' ? 'Draft session saved' : `Session created - W${session.weekNumber}`)
           }}
           onCancel={() => setShowCreate(false)}
-          onError={message => {
-            setShowCreate(false)
-            flash(message, 'error')
-          }}
         />
       )}
 
@@ -498,30 +494,42 @@ function CreateSessionModal({
   defaultFarmId,
   onCreated,
   onCancel,
-  onError,
 }: {
   farms: FarmResponse[]
   defaultFarmId: string
   onCreated: (session: ScoutingSessionDetailDto) => void
   onCancel: () => void
-  onError: (msg: string) => void
 }) {
-  const { week } = currentWeek()
+  const { week: defaultWeek } = currentWeek()
   const [saving, setSaving] = useState(false)
+  const [dismissSaving, setDismissSaving] = useState(false)
+  const [dismissPromptOpen, setDismissPromptOpen] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [initialSessionDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [farmId, setFarmId] = useState(defaultFarmId)
   const [scouts, setScouts] = useState<UserDto[]>([])
   const [structures, setStructures] = useState<(GreenhouseResponse | FieldBlockResponse)[]>([])
   const [plannerTargets, setPlannerTargets] = useState<SessionPlannerTargetDraft[]>([])
   const [surveySpeciesCodes, setSurveySpeciesCodes] = useState<SpeciesCode[]>([])
+  const [customSurveySpeciesIds, setCustomSurveySpeciesIds] = useState<string[]>([])
   const [scoutId, setScoutId] = useState('')
   const [crop, setCrop] = useState('')
   const [variety, setVariety] = useState('')
   const [notes, setNotes] = useState('')
-  const [sessionDate, setSessionDate] = useState(new Date().toISOString().slice(0, 10))
-  const [weekNumber, setWeekNumber] = useState(week)
-
+  const [sessionDate, setSessionDate] = useState(initialSessionDate)
+  const [weekNumber, setWeekNumber] = useState(defaultWeek)
   const selectedFarm = farms.find(farm => farm.id === farmId)
-  const isField = selectedFarm?.structureType === 'FIELD'
+  const isDirty =
+    farmId !== defaultFarmId ||
+    scoutId.trim() !== '' ||
+    crop.trim() !== '' ||
+    variety.trim() !== '' ||
+    notes.trim() !== '' ||
+    plannerTargets.length > 0 ||
+    surveySpeciesCodes.length > 0 ||
+    customSurveySpeciesIds.length > 0 ||
+    sessionDate !== initialSessionDate ||
+    weekNumber !== defaultWeek
 
   useEffect(() => {
     if (!farmId) return
@@ -529,60 +537,137 @@ function CreateSessionModal({
   }, [farmId])
 
   useEffect(() => {
-    if (!farmId || selectedFarm?.structureType === 'OTHER') {
+    if (!farmId) {
       setStructures([])
+      setPlannerTargets([])
       return
     }
 
-    const request = isField ? adminFarmsApi.listFieldBlocks(farmId) : adminFarmsApi.listGreenhouses(farmId)
-    request.then(data => setStructures(data as any[])).catch(() => setStructures([]))
+    const loadStructures = async () => {
+      if (selectedFarm?.structureType === 'GREENHOUSE') {
+        return adminFarmsApi.listGreenhouses(farmId)
+      }
+      if (selectedFarm?.structureType === 'FIELD') {
+        return adminFarmsApi.listFieldBlocks(farmId)
+      }
+
+      const [greenhouses, fieldBlocks] = await Promise.all([
+        adminFarmsApi.listGreenhouses(farmId).catch(() => [] as GreenhouseResponse[]),
+        adminFarmsApi.listFieldBlocks(farmId).catch(() => [] as FieldBlockResponse[]),
+      ])
+
+      if (greenhouses.length > 0 && fieldBlocks.length === 0) return greenhouses
+      if (fieldBlocks.length > 0 && greenhouses.length === 0) return fieldBlocks
+      return [...greenhouses, ...fieldBlocks]
+    }
+
+    loadStructures()
+      .then(data => setStructures(data as (GreenhouseResponse | FieldBlockResponse)[]))
+      .catch(() => setStructures([]))
     setPlannerTargets([])
-  }, [farmId, isField, selectedFarm?.structureType])
+  }, [farmId, selectedFarm?.structureType])
 
   function handleFarmChange(id: string) {
     setFarmId(id)
     setScoutId('')
     setPlannerTargets([])
+    setSurveySpeciesCodes([])
+    setCustomSurveySpeciesIds([])
+    setError(null)
+  }
+
+  function buildTargets(): SessionTargetRequest[] | undefined {
+    return plannerTargets.length > 0
+      ? plannerTargets.map(target => ({
+          ...(target.structureType === 'FIELD'
+            ? {
+                fieldBlockId: target.structureId,
+                areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
+              }
+            : {
+                greenhouseId: target.structureId,
+                includeAllBays: target.includeAllBays,
+                includeAllBenches: target.includeAllBenches,
+                bayTags: target.includeAllBays ? [] : target.bayTags,
+                benchTags: target.includeAllBenches ? [] : target.benchTags,
+                areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
+              }),
+        }))
+      : undefined
+  }
+
+  function buildRequestBody(status?: SessionStatus): CreateSessionRequest {
+    return {
+      farmId,
+      scoutId: scoutId || undefined,
+      targets: buildTargets(),
+      status,
+      sessionDate,
+      weekNumber,
+      crop: crop || undefined,
+      variety: variety || undefined,
+      surveySpeciesCodes: surveySpeciesCodes.length > 0 ? surveySpeciesCodes : undefined,
+      customSurveySpeciesIds: customSurveySpeciesIds.length > 0 ? customSurveySpeciesIds : undefined,
+      notes: notes || undefined,
+    }
+  }
+
+  async function createDraftAndClose() {
+    if (!farmId || saving || dismissSaving) {
+      if (!farmId) onCancel()
+      return
+    }
+
+    setDismissSaving(true)
+    setError(null)
+    try {
+      onCreated(await sessionsApi.create(buildRequestBody('DRAFT')))
+    } catch (error: any) {
+      setError(error?.response?.data?.message ?? 'Failed to save draft session')
+      setDismissPromptOpen(false)
+    } finally {
+      setDismissSaving(false)
+    }
   }
 
   async function handleCreate() {
     if (!farmId) {
-      onError('Please select a farm')
+      setError('Please select a farm')
       return
     }
 
-    const targets: SessionTargetRequest[] | undefined = plannerTargets.length > 0
-      ? plannerTargets.map(target => ({
-          ...(target.structureType === 'FIELD'
-            ? { fieldBlockId: target.structureId }
-            : { greenhouseId: target.structureId }),
-          includeAllBays: target.includeAllBays,
-          includeAllBenches: target.includeAllBenches,
-          bayTags: target.includeAllBays ? [] : target.bayTags,
-          benchTags: target.includeAllBenches ? [] : target.benchTags,
-          areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
-        }))
-      : undefined
-
     setSaving(true)
+    setError(null)
     try {
-      const body: CreateSessionRequest = {
-        farmId,
-        scoutId: scoutId || undefined,
-        targets,
-        sessionDate,
-        weekNumber,
-        crop: crop || undefined,
-        variety: variety || undefined,
-        surveySpeciesCodes: surveySpeciesCodes.length > 0 ? surveySpeciesCodes : undefined,
-        notes: notes || undefined,
-      }
-      onCreated(await sessionsApi.create(body))
+      onCreated(await sessionsApi.create(buildRequestBody()))
     } catch (error: any) {
-      onError(error?.response?.data?.message ?? 'Failed to create session')
+      setError(error?.response?.data?.message ?? 'Failed to create session')
     } finally {
       setSaving(false)
     }
+  }
+
+  function handleCancel() {
+    if (saving || dismissSaving) return
+    onCancel()
+  }
+
+  function handleRequestDismiss() {
+    if (saving || dismissSaving) return
+    if (!isDirty) {
+      onCancel()
+      return
+    }
+    setDismissPromptOpen(true)
+  }
+
+  function handleBackdropDismiss() {
+    if (saving || dismissSaving) return
+    if (!isDirty) {
+      onCancel()
+      return
+    }
+    void createDraftAndClose()
   }
 
   return (
@@ -598,7 +683,7 @@ function CreateSessionModal({
         padding: 24,
       }}
       onClick={e => {
-        if (e.target === e.currentTarget) onCancel()
+        if (e.target === e.currentTarget) handleBackdropDismiss()
       }}
     >
       <div
@@ -617,12 +702,28 @@ function CreateSessionModal({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h2 style={{ fontSize: 14, color: '#111827' }}>New scouting session</h2>
           <button
-            onClick={onCancel}
+            onClick={handleRequestDismiss}
             style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: '#9ca3af', lineHeight: 1 }}
           >
             x
           </button>
         </div>
+
+        {error && (
+          <div
+            style={{
+              marginBottom: 14,
+              padding: '10px 14px',
+              borderRadius: 8,
+              fontSize: 12,
+              background: '#fff5f5',
+              border: '0.5px solid #fca5a5',
+              color: '#c53030',
+            }}
+          >
+            {error}
+          </div>
+        )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <Field label="Farm *">
@@ -684,11 +785,15 @@ function CreateSessionModal({
           </Field>
 
           <SessionPlannerFields
+            farmId={farmId}
+            farmStructureType={selectedFarm?.structureType}
             structures={structures}
             targets={plannerTargets}
             surveySpeciesCodes={surveySpeciesCodes}
+            customSurveySpeciesIds={customSurveySpeciesIds}
             onTargetsChange={setPlannerTargets}
             onSurveySpeciesCodesChange={setSurveySpeciesCodes}
+            onCustomSurveySpeciesIdsChange={setCustomSurveySpeciesIds}
           />
         </div>
 
@@ -707,11 +812,20 @@ function CreateSessionModal({
         </div>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-          <button className="btn-secondary" onClick={onCancel}>Cancel</button>
-          <button className="btn-primary" onClick={handleCreate} disabled={saving}>
+          <button className="btn-secondary" onClick={handleCancel} disabled={saving || dismissSaving}>Cancel</button>
+          <button className="btn-primary" onClick={handleCreate} disabled={saving || dismissSaving}>
             {saving ? 'Creating...' : 'Create session'}
           </button>
         </div>
+
+        {dismissPromptOpen && (
+          <DraftDismissModal
+            loading={dismissSaving}
+            onSaveDraft={() => void createDraftAndClose()}
+            onDelete={onCancel}
+            onContinue={() => setDismissPromptOpen(false)}
+          />
+        )}
       </div>
     </div>
   )
@@ -722,6 +836,74 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     <div>
       <label style={{ display: 'block', fontSize: 11, color: '#6b7280', marginBottom: 4 }}>{label}</label>
       {children}
+    </div>
+  )
+}
+
+function DraftDismissModal({
+  loading,
+  onSaveDraft,
+  onDelete,
+  onContinue,
+}: {
+  loading: boolean
+  onSaveDraft: () => void
+  onDelete: () => void
+  onContinue: () => void
+}) {
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 60,
+        background: 'rgba(0,0,0,0.18)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
+      }}
+      onClick={e => {
+        if (e.target === e.currentTarget && !loading) onContinue()
+      }}
+    >
+      <div
+        style={{
+          width: '100%',
+          maxWidth: 440,
+          background: '#fff',
+          borderRadius: 12,
+          border: '0.5px solid #e5e7eb',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.14)',
+          padding: 24,
+        }}
+      >
+        <h3 style={{ fontSize: 14, fontWeight: 600, color: '#111827', marginBottom: 10 }}>Save this session as a draft?</h3>
+        <div
+          style={{
+            marginBottom: 18,
+            padding: '12px 14px',
+            borderRadius: 8,
+            background: '#f9fafb',
+            border: '0.5px solid #e5e7eb',
+            fontSize: 12,
+            color: '#374151',
+          }}
+        >
+          Closing from the X keeps the work as a draft. Delete will discard this unsaved session instead.
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn-secondary" type="button" onClick={onContinue} disabled={loading}>
+            Continue editing
+          </button>
+          <button className="btn-danger" type="button" onClick={onDelete} disabled={loading}>
+            Delete
+          </button>
+          <button className="btn-primary" type="button" onClick={onSaveDraft} disabled={loading}>
+            {loading ? 'Saving draft...' : 'Save to draft'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

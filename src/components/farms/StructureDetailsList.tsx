@@ -76,7 +76,7 @@ export default function StructureDetailsList({
                 </div>
                 <div style={{ fontSize: 11, color: '#6b7280' }}>
                   {isField
-                    ? `${infoText(field.areaHectares != null ? `${field.areaHectares} ha` : null)} · ${infoText(field.bayCount)} rows${field.cropType ? ` · ${field.cropType}` : ''}`
+                    ? `${infoText(field.areaHectares != null ? `${field.areaHectares} ha` : null)}${field.cropType ? ` · ${field.cropType}` : ''}`
                     : `${infoText(greenhouse.areaHectares != null ? `${greenhouse.areaHectares} ha` : null)} · ${greenhouseBays.length || greenhouse.bayCount || 0} bays · ${countGreenhouseBeds(greenhouse)} beds`}
                 </div>
               </div>
@@ -126,9 +126,7 @@ export default function StructureDetailsList({
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
                     <InfoCard label="Area" value={field.areaHectares != null ? `${field.areaHectares} ha` : '—'} />
                     <InfoCard label="Crop" value={field.cropType ?? '—'} />
-                    <InfoCard label="Rows" value={field.bayCount ?? '—'} />
-                    <InfoCard label="Spot checks / row" value={field.spotChecksPerBay ?? '—'} />
-                    <InfoCard label="Bay tags" value={field.bayTags?.join(', ') || '—'} fullWidth />
+                    <InfoCard label="Spot checks" value={field.spotChecksPerBay ?? '—'} />
                   </div>
                 ) : greenhouseBays.length > 0 ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

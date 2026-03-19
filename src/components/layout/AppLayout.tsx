@@ -1,6 +1,7 @@
-import { Outlet, useLocation } from 'react-router-dom'
+import { Link, Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import { useAuthStore } from '@/hooks/useAuth'
+import { useSessionConnectionStore } from '@/hooks/useSessionConnection'
 
 const PAGE_TITLES: Record<string, string> = {
   '/':          'Dashboard',
@@ -9,13 +10,15 @@ const PAGE_TITLES: Record<string, string> = {
   '/analytics': 'Analytics',
   '/heatmap':   'Heat maps',
   '/alerts':    'Alerts',
-  '/settings':  'Settings',
+  '/profile':   'Profile',
+  '/settings':  'Profile',
   '/admin':     'Super Admin',
 }
 
 export default function AppLayout() {
   const location = useLocation()
   const { user } = useAuthStore()
+  const { status: sessionConnectionStatus, message: sessionConnectionMessage } = useSessionConnectionStore()
 
   // Match /sessions/:id
   const isSessionDetail = /^\/sessions\/.+/.test(location.pathname)
@@ -61,7 +64,10 @@ export default function AppLayout() {
             )}
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Link
+            to="/profile"
+            style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none' }}
+          >
             {/* Role badge */}
             <span style={{
               fontSize: 10, color: '#9ca3af',
@@ -88,8 +94,24 @@ export default function AppLayout() {
             <span style={{ fontSize: 12, color: '#374151' }}>
               {user?.firstName} {user?.lastName}
             </span>
-          </div>
+          </Link>
         </header>
+
+        {sessionConnectionStatus !== 'idle' && sessionConnectionStatus !== 'connected' && sessionConnectionMessage && (
+          <div
+            style={{
+              padding: '10px 28px',
+              background: sessionConnectionStatus === 'offline' ? '#fff7ed' : '#fffbeb',
+              borderBottom: '0.5px solid',
+              borderColor: sessionConnectionStatus === 'offline' ? '#fdba74' : '#fcd34d',
+              color: sessionConnectionStatus === 'offline' ? '#9a3412' : '#92400e',
+              fontSize: 12,
+              flexShrink: 0,
+            }}
+          >
+            {sessionConnectionMessage}
+          </div>
+        )}
 
         <main style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
           <Outlet />

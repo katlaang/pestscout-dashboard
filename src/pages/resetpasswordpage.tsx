@@ -101,7 +101,7 @@ export default function ResetPasswordPage() {
               New password
             </label>
             <input className="input" type="password" placeholder="At least 8 characters"
-              value={newPassword} onChange={e => setNewPassword(e.target.value)}
+              value={newPassword} onChange={e => setNewPassword(e.target.value)} onPaste={event => event.preventDefault()}
               required autoComplete="new-password" />
           </div>
           <div>
@@ -109,7 +109,7 @@ export default function ResetPasswordPage() {
               Confirm password
             </label>
             <input className="input" type="password" placeholder="Repeat new password"
-              value={confirm} onChange={e => setConfirm(e.target.value)}
+              value={confirm} onChange={e => setConfirm(e.target.value)} onPaste={event => event.preventDefault()}
               required autoComplete="new-password" />
           </div>
 

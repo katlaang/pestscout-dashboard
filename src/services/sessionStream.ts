@@ -1,4 +1,5 @@
 import { getClientSessionId } from '@/utils/clientSession'
+import { useSessionConnectionStore } from '@/hooks/useSessionConnection'
 
 interface StartOptions {
   token: string
@@ -41,6 +42,7 @@ class SessionEventStream {
   private clientSessionId: string | null = null
   private onSessionReplaced: (() => void) | null = null
   private active = false
+  private retryAttempt = 0
 
   start({ token, clientSessionId = getClientSessionId(), onSessionReplaced }: StartOptions) {
     const sameConnection =
@@ -54,14 +56,17 @@ class SessionEventStream {
 
     this.stop()
     this.active = true
+    this.retryAttempt = 0
     this.token = token
     this.clientSessionId = clientSessionId
     this.onSessionReplaced = onSessionReplaced
+    this.setConnectionState('connecting', 'Connecting to live session updates...')
     void this.connect()
   }
 
   stop() {
     this.active = false
+    this.retryAttempt = 0
     this.token = null
     this.clientSessionId = null
     if (this.retryTimer) {
@@ -72,14 +77,32 @@ class SessionEventStream {
       this.controller.abort()
       this.controller = null
     }
+    useSessionConnectionStore.getState().resetConnectionState()
+  }
+
+  private setConnectionState(status: 'connecting' | 'connected' | 'reconnecting' | 'offline', message?: string | null) {
+    useSessionConnectionStore.getState().setConnectionState(status, message ?? null)
   }
 
   private scheduleReconnect() {
     if (!this.active || this.retryTimer) return
+    this.retryAttempt += 1
+    const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false
+    const delay = isOffline
+      ? 15000
+      : Math.min(3000 * 2 ** Math.min(this.retryAttempt - 1, 4), 30000)
+
+    this.setConnectionState(
+      isOffline ? 'offline' : 'reconnecting',
+      isOffline
+        ? 'Your device is offline. Waiting to restore live session updates...'
+        : 'Live session updates were interrupted. Reconnecting...',
+    )
+
     this.retryTimer = window.setTimeout(() => {
       this.retryTimer = null
       void this.connect()
-    }, 3000)
+    }, delay)
   }
 
   private async connect() {
@@ -119,6 +142,8 @@ class SessionEventStream {
         throw new Error(`Failed to connect to session events: ${response.status}`)
       }
 
+      this.retryAttempt = 0
+      this.setConnectionState('connected')
       await this.consume(response, controller.signal)
 
       if (this.active && !controller.signal.aborted) {

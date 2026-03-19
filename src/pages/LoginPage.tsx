@@ -64,7 +64,7 @@ export default function LoginPage() {
               <button className="btn-secondary" style={{ fontSize: 12 }} onClick={() => { setShowExpiryPopup(false); navigate('/', { replace: true }) }}>
                 Remind me later
               </button>
-              <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => navigate('/settings?changePassword=true', { replace: true })}>
+              <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => navigate('/profile?changePassword=true', { replace: true })}>
                 Change password
               </button>
             </div>
@@ -114,7 +114,7 @@ export default function LoginPage() {
             <div>
               <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#374151', marginBottom: 5 }}>Password</label>
               <input className="input" type="password" placeholder="••••••••"
-                value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password" />
+                value={password} onChange={e => setPassword(e.target.value)} onPaste={event => event.preventDefault()} required autoComplete="current-password" />
             </div>
             <button className="btn-primary" type="submit" disabled={isLoading} style={{ marginTop: 4, padding: '11px', fontSize: 13 }}>
               {isLoading ? 'Signing in…' : 'Sign in'}

@@ -1,10 +1,12 @@
 import axios, { type AxiosInstance, type AxiosError } from 'axios'
 import type {
   LoginRequest, LoginResponse, UserDto, ChangePasswordRequest,
+  UpdateMyProfileRequest, TemporaryPasswordRequest,
   FarmResponse,
   ScoutingSessionDetailDto, ScoutingObservationDto,
   CreateObservationRequest, UpdateObservationRequest,
   HeatmapResponse,
+  MonthlyHeatmapResponse,
   DashboardDto, DashboardSummaryDto,
   WeeklyPestTrendDto, SeverityTrendPointDto,
   AlertDto, RecommendationDto,
@@ -20,6 +22,9 @@ import type {
   CacheInfo,
   ScoutingSessionAuditDto,
   SpeciesCode,
+  SessionStatus,
+  CustomSpecies,
+  CustomSpeciesCategory,
 } from '@/types'
 import { getClientSessionId } from '@/utils/clientSession'
 import {
@@ -133,6 +138,9 @@ export const authApi = {
   me: () =>
     api.get<UserDto>('/api/auth/me').then(r => r.data),
 
+  updateMe: (body: UpdateMyProfileRequest) =>
+    api.put<UserDto>('/api/auth/me', body).then(r => r.data),
+
   refresh: (refreshToken: string) =>
     api.post<LoginResponse>('/api/auth/refresh', { refreshToken }).then(r => r.data),
 
@@ -177,11 +185,13 @@ export interface CreateSessionRequest {
   farmId: string
   scoutId?: string                 // optional - backend falls back to farm scout
   targets?: SessionTargetRequest[] // optional - backend auto-resolves all structures
+  status?: SessionStatus
   sessionDate: string              // ISO local date
   weekNumber?: number
   crop?: string
   variety?: string
   surveySpeciesCodes?: SpeciesCode[]
+  customSurveySpeciesIds?: string[]
   notes?: string
   actorName?: string
   deviceId?: string
@@ -219,6 +229,7 @@ export interface UpdateSessionRequest {
   crop?: string
   variety?: string
   surveySpeciesCodes?: SpeciesCode[]
+  customSurveySpeciesIds?: string[]
   targets?: SessionTargetRequest[]
   notes?: string
   temperatureCelsius?: number
@@ -320,6 +331,21 @@ export const observationsApi = {
     api.delete(`/api/scouting/sessions/${sessionId}/observations/${obsId}`).then(r => r.data),
 }
 
+// —— Farm-specific custom species ——————————————————————————————————————————————
+
+export const customSpeciesApi = {
+  list: (farmId: string, category: CustomSpeciesCategory) =>
+    api.get<CustomSpecies[]>(`/api/farms/${farmId}/custom-species`, {
+      params: { category },
+    }).then(r => r.data),
+
+  create: (farmId: string, category: CustomSpeciesCategory, names: string[]) =>
+    api.post<CustomSpecies[]>(`/api/farms/${farmId}/custom-species`, {
+      category,
+      names,
+    }).then(r => r.data),
+}
+
 // ─── Analytics ────────────────────────────────────────────────────────────────
 
 export const analyticsApi = {
@@ -334,7 +360,7 @@ export const analyticsApi = {
     }).then(r => r.data),
 
   heatmap: (farmId: string, month: number, year: number) =>
-    api.get<HeatmapResponse>('/api/analytics/heatmap/monthly', {
+    api.get<MonthlyHeatmapResponse>('/api/analytics/heatmap/monthly', {
       params: { farmId, month, year }
     }).then(r => r.data),
 
@@ -379,6 +405,9 @@ export const adminUsersApi = {
 
   update: (userId: string, body: UpdateUserRequest) =>
     api.put<UserDto>(`/api/auth/users/${userId}`, body).then(r => r.data),
+
+  setTemporaryPassword: (userId: string, body: TemporaryPasswordRequest) =>
+    api.post<UserDto>(`/api/auth/users/${userId}/temporary-password`, body).then(r => r.data),
 
   setEnabled: (userId: string, enabled: boolean) =>
     api.put<UserDto>(`/api/auth/users/${userId}`, { isEnabled: enabled }).then(r => r.data),
@@ -476,6 +505,9 @@ export const adminFarmsApi = {
 
   listMembers: (farmId: string) =>
     api.get<FarmMemberResponse[]>(`/api/farms/${farmId}/members`).then(r => r.data),
+
+  addMember: (farmId: string, userId: string) =>
+    api.post<FarmMemberResponse>(`/api/farms/${farmId}/members`, { userId }).then(r => r.data),
 }
 
 // ─── Super Admin — Cache ──────────────────────────────────────────────────────

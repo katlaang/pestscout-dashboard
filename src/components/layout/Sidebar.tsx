@@ -9,7 +9,7 @@ const ALL_NAV = [
   { to: '/analytics',  label: 'Analytics',  icon: ChartIcon, roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
   { to: '/heatmap',    label: 'Heat maps',  icon: GridIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
   { to: '/alerts',     label: 'Alerts',     icon: BellIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
-  { to: '/settings',   label: 'Settings',   icon: GearIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER', 'SCOUT'] },
+  { to: '/profile',    label: 'Profile',    icon: PersonIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER', 'SCOUT'] },
 ]
 
 const SUPER_ADMIN_NAV = [
@@ -191,10 +191,10 @@ function GridIcon({ size = 16 }) {
   </svg>
 }
 
-function GearIcon({ size = 16 }) {
-  return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
-    <circle cx="8" cy="8" r="2.2"/>
-    <path d="M8 1.5v1.7M8 12.8v1.7M1.5 8h1.7M12.8 8h1.7M3.4 3.4l1.2 1.2M11.4 11.4l1.2 1.2M3.4 12.6l1.2-1.2M11.4 4.6l1.2-1.2"/>
+function PersonIcon({ size = 16 }) {
+  return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="8" cy="5" r="2.5"/>
+    <path d="M3.5 13c.8-2.2 2.5-3.5 4.5-3.5s3.7 1.3 4.5 3.5"/>
   </svg>
 }
 

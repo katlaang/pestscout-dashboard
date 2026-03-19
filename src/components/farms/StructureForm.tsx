@@ -87,23 +87,12 @@ export default function StructureForm({
       ? (existing as FieldBlockResponse | null)?.spotChecksPerBay != null
         ? String((existing as FieldBlockResponse).spotChecksPerBay)
         : ''
-      : (existing as GreenhouseResponse | null)?.spotChecksPerBench != null
-        ? String((existing as GreenhouseResponse).spotChecksPerBench)
-        : '',
+      : '',
   )
   const [active, setActive] = useState(existing ? existing.active : true)
 
   const [bays, setBays] = useState<GreenhouseBayRequest[]>(
     isField ? [] : existingGreenhouseBays(existing as GreenhouseResponse | null | undefined),
-  )
-
-  const [bayCount, setBayCount] = useState(
-    isField && (existing as FieldBlockResponse | null)?.bayCount != null
-      ? String((existing as FieldBlockResponse).bayCount)
-      : '',
-  )
-  const [bayTagsRaw, setBayTagsRaw] = useState(
-    isField ? ((existing as FieldBlockResponse | null)?.bayTags ?? []).join(', ') : '',
   )
   const [cropType, setCropType] = useState(
     isField ? ((existing as FieldBlockResponse | null)?.cropType ?? '') : '',
@@ -132,21 +121,11 @@ export default function StructureForm({
     setSaving(true)
     try {
       if (isField) {
-        const parsedBayCount = bayCount === '' ? null : Number(bayCount)
-        if (parsedBayCount != null && (!Number.isFinite(parsedBayCount) || parsedBayCount < 1)) {
-          onError('Field bay count must be at least 1')
-          return
-        }
-
         const body = {
           farmId,
           name: name.trim(),
           description: description.trim() || undefined,
-          bayCount: parsedBayCount,
           spotChecksPerBay: spotChecks === '' ? null : Number(spotChecks),
-          bayTags: bayTagsRaw
-            ? bayTagsRaw.split(',').map(tag => tag.trim()).filter(Boolean)
-            : undefined,
           cropType: cropType.trim() || undefined,
           areaHectares: parsedArea,
           active,
@@ -187,7 +166,6 @@ export default function StructureForm({
         description: description.trim() || undefined,
         bayCount: cleanedBays.length,
         benchesPerBay: null,
-        spotChecksPerBench: spotChecks === '' ? null : Number(spotChecks),
         areaHectares: parsedArea,
         bays: cleanedBays,
         active,
@@ -248,27 +226,17 @@ export default function StructureForm({
             style={areaError ? { borderColor: '#fca5a5' } : undefined}
           />
         </FormField>
-        <FormField label={isField ? 'Spots per bay' : 'Spot checks per bed'}>
-          <input
-            className="input"
-            type="number"
-            min={1}
-            step={1}
-            value={spotChecks}
-            onChange={event => setSpotChecks(event.target.value)}
-          />
-        </FormField>
 
         {isField ? (
           <>
-            <FormField label="Field rows / bays">
+            <FormField label="Spot checks">
               <input
                 className="input"
                 type="number"
                 min={1}
                 step={1}
-                value={bayCount}
-                onChange={event => setBayCount(event.target.value)}
+                value={spotChecks}
+                onChange={event => setSpotChecks(event.target.value)}
               />
             </FormField>
             <FormField label="Crop type">
@@ -279,16 +247,6 @@ export default function StructureForm({
                 onChange={event => setCropType(event.target.value)}
               />
             </FormField>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <FormField label="Bay tags (optional, comma-separated)">
-                <input
-                  className="input"
-                  placeholder="Row-1, Row-2, Row-3"
-                  value={bayTagsRaw}
-                  onChange={event => setBayTagsRaw(event.target.value)}
-                />
-              </FormField>
-            </div>
           </>
         ) : (
           <div style={{ gridColumn: '1 / -1' }}>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { adminFarmsApi, adminUsersApi } from '@/services/api'
+import { parseCoordinateInput } from '@/utils/coordinates'
 import GreenhouseBayEditor from './GreenhouseBayEditor'
 import type {
   CreateFarmRequest,
@@ -27,7 +28,6 @@ function createGreenhouseDraft(): FarmGreenhouseDraftRequest {
     name: '',
     description: '',
     areaHectares: null,
-    spotChecksPerBench: null,
     active: true,
     bays: [],
   }
@@ -39,9 +39,7 @@ function createFieldDraft(): FarmFieldBlockDraftRequest {
     description: '',
     areaHectares: null,
     cropType: '',
-    bayCount: null,
     spotChecksPerBay: null,
-    bayTags: [],
     active: true,
   }
 }
@@ -160,6 +158,8 @@ export default function CreateFarmSetupForm({
   const [memberIds, setMemberIds] = useState<string[]>([])
   const [greenhouses, setGreenhouses] = useState<FarmGreenhouseDraftRequest[]>([])
   const [fieldBlocks, setFieldBlocks] = useState<FarmFieldBlockDraftRequest[]>([])
+  const [latitudeInput, setLatitudeInput] = useState('')
+  const [longitudeInput, setLongitudeInput] = useState('')
   const [form, setForm] = useState<CreateFarmRequest>({
     name: '',
     ownerId: NULL_UUID,
@@ -274,7 +274,6 @@ export default function CreateFarmSetupForm({
       name: greenhouse.name.trim(),
       description: greenhouse.description?.trim() || undefined,
       areaHectares: greenhouse.areaHectares == null ? null : Number(greenhouse.areaHectares),
-      spotChecksPerBench: greenhouse.spotChecksPerBench == null ? null : Number(greenhouse.spotChecksPerBench),
       bays: (greenhouse.bays ?? []).map((bay: GreenhouseBayRequest) => ({
         bayTag: bay.bayTag.trim(),
         bedCount: Math.max(1, Number(bay.bedCount)),
@@ -283,18 +282,18 @@ export default function CreateFarmSetupForm({
     }))
   }
 
-  function cleanFieldBlocks() {
-    return fieldBlocks.map(fieldBlock => ({
-      ...fieldBlock,
-      name: fieldBlock.name.trim(),
-      description: fieldBlock.description?.trim() || undefined,
-      cropType: fieldBlock.cropType?.trim() || undefined,
-      areaHectares: fieldBlock.areaHectares == null ? null : Number(fieldBlock.areaHectares),
-      bayCount: fieldBlock.bayCount == null ? null : Number(fieldBlock.bayCount),
-      spotChecksPerBay: fieldBlock.spotChecksPerBay == null ? null : Number(fieldBlock.spotChecksPerBay),
-      bayTags: (fieldBlock.bayTags ?? []).map(tag => tag.trim()).filter(Boolean),
-    }))
-  }
+function cleanFieldBlocks() {
+  return fieldBlocks.map(fieldBlock => ({
+    ...fieldBlock,
+    name: fieldBlock.name.trim(),
+    description: fieldBlock.description?.trim() || undefined,
+    cropType: fieldBlock.cropType?.trim() || undefined,
+    areaHectares: fieldBlock.areaHectares == null ? null : Number(fieldBlock.areaHectares),
+    spotChecksPerBay: fieldBlock.spotChecksPerBay == null ? null : Number(fieldBlock.spotChecksPerBay),
+    bayCount: undefined,
+    bayTags: undefined,
+  }))
+}
 
   async function createFarm() {
     if (!form.name.trim()) {
@@ -348,6 +347,17 @@ export default function CreateFarmSetupForm({
       }
     }
 
+    let latitude: number | undefined
+    let longitude: number | undefined
+
+    try {
+      latitude = parseCoordinateInput(latitudeInput, 'latitude')
+      longitude = parseCoordinateInput(longitudeInput, 'longitude')
+    } catch (error: any) {
+      onError(error?.message ?? 'Latitude or longitude is invalid')
+      return
+    }
+
     const body: CreateFarmRequest = {
       ...form,
       name: form.name.trim(),
@@ -361,6 +371,8 @@ export default function CreateFarmSetupForm({
       contactEmail: form.contactEmail?.trim() || undefined,
       contactPhone: form.contactPhone?.trim() || undefined,
       timezone: form.timezone?.trim() || undefined,
+      latitude,
+      longitude,
       ownerId: useNullOwner ? NULL_UUID : form.ownerId,
       greenhouses: form.structureType === 'GREENHOUSE' ? cleanedGreenhouses : [],
       fieldBlocks: form.structureType === 'FIELD' ? cleanedFieldBlocks : [],
@@ -376,7 +388,7 @@ export default function CreateFarmSetupForm({
 
       if (assignments.length > 0) {
         const results = await Promise.allSettled(
-          assignments.map(userId => adminUsersApi.update(userId, { farmId: created.id })),
+          assignments.map(userId => adminFarmsApi.addMember(created.id, userId)),
         )
 
         const failedAssignments = results.filter(result => result.status === 'rejected').length
@@ -461,19 +473,19 @@ export default function CreateFarmSetupForm({
         <FormField label="Latitude">
           <input
             className="input"
-            type="number"
-            step="any"
-            value={form.latitude ?? ''}
-            onChange={event => setField('latitude', parseOptionalNumber(event.target.value) ?? undefined)}
+            type="text"
+            placeholder="e.g. 51.0447 N"
+            value={latitudeInput}
+            onChange={event => setLatitudeInput(event.target.value)}
           />
         </FormField>
         <FormField label="Longitude">
           <input
             className="input"
-            type="number"
-            step="any"
-            value={form.longitude ?? ''}
-            onChange={event => setField('longitude', parseOptionalNumber(event.target.value) ?? undefined)}
+            type="text"
+            placeholder="e.g. 114.0719 W"
+            value={longitudeInput}
+            onChange={event => setLongitudeInput(event.target.value)}
           />
         </FormField>
         <FormField label="Contact name">
@@ -572,7 +584,7 @@ export default function CreateFarmSetupForm({
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 500, color: '#111827', marginBottom: 2 }}>Farm members</div>
             <div style={{ fontSize: 11, color: '#6b7280' }}>
-              Attach existing users to this farm during creation. You can still manage structures later.
+              Attach existing users to this farm during creation. Their current role stays the same across every farm they belong to.
             </div>
           </div>
           <input
@@ -653,16 +665,6 @@ export default function CreateFarmSetupForm({
                         step={0.01}
                         value={greenhouse.areaHectares ?? ''}
                         onChange={event => updateGreenhouse(index, { areaHectares: parseOptionalNumber(event.target.value) })}
-                      />
-                    </FormField>
-                    <FormField label="Spot checks per bed">
-                      <input
-                        className="input"
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={greenhouse.spotChecksPerBench ?? ''}
-                        onChange={event => updateGreenhouse(index, { spotChecksPerBench: parseOptionalNumber(event.target.value) })}
                       />
                     </FormField>
                   </div>
@@ -749,17 +751,7 @@ export default function CreateFarmSetupForm({
                         onChange={event => updateFieldBlock(index, { cropType: event.target.value })}
                       />
                     </FormField>
-                    <FormField label="Rows / bays">
-                      <input
-                        className="input"
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={fieldBlock.bayCount ?? ''}
-                        onChange={event => updateFieldBlock(index, { bayCount: parseOptionalNumber(event.target.value) })}
-                      />
-                    </FormField>
-                    <FormField label="Spot checks per bay">
+                    <FormField label="Spot checks">
                       <input
                         className="input"
                         type="number"
@@ -769,21 +761,6 @@ export default function CreateFarmSetupForm({
                         onChange={event => updateFieldBlock(index, { spotChecksPerBay: parseOptionalNumber(event.target.value) })}
                       />
                     </FormField>
-                    <div style={{ gridColumn: '1 / -1' }}>
-                      <FormField label="Bay tags (optional, comma-separated)">
-                        <input
-                          className="input"
-                          placeholder="Row-1, Row-2, Row-3"
-                          value={(fieldBlock.bayTags ?? []).join(', ')}
-                          onChange={event => updateFieldBlock(index, {
-                            bayTags: event.target.value
-                              .split(',')
-                              .map(tag => tag.trim())
-                              .filter(Boolean),
-                          })}
-                        />
-                      </FormField>
-                    </div>
                   </div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#374151', marginTop: 10, cursor: 'pointer' }}>
                     <input

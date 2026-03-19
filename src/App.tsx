@@ -11,7 +11,7 @@ import SessionDetailPage from '@/pages/SessionDetailPage'
 import AnalyticsPage from '@/pages/AnalyticsPage'
 import HeatmapPage from '@/pages/HeatmapPage'
 import AlertsPage from '@/pages/AlertsPage'
-import SettingsPage from '@/pages/SettingsPage'
+import ProfilePage from '@/pages/ProfilePage'
 import SuperAdminPage from '@/pages/SuperAdminPage'
 import { useIdleTimer } from '@/hooks/useidletimer'
 import { useAuthStore } from '@/hooks/useAuth'
@@ -62,7 +62,8 @@ export default function App() {
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="heatmap" element={<HeatmapPage />} />
           <Route path="alerts" element={<AlertsPage />} />
-          <Route path="settings" element={<SettingsPage />} />
+          <Route path="profile" element={<ProfilePage />} />
+          <Route path="settings" element={<Navigate to="/profile" replace />} />
           <Route path="admin" element={<SuperAdminPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

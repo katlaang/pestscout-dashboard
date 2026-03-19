@@ -59,13 +59,14 @@ export const SPECIES_LABELS: Record<SpeciesCode, string> = {
   BACTERIAL_WILT:    'Bacterial wilt',
   DISEASE_OTHER:     'Other disease',
   BENEFICIAL_PP:     'Beneficial (PP)',
+  BENEFICIAL_OTHER:  'Other beneficial insect',
 }
 
 // ─── Session status ───────────────────────────────────────────────────────────
 
 export const SESSION_STATUS_BADGE: Record<SessionStatus, { label: string; cls: string }> = {
   DRAFT:       { label: 'Draft',       cls: 'badge-yellow' },
-  NEW:         { label: 'New',         cls: 'badge-gray' },
+  NEW:         { label: 'New',         cls: 'badge-green' },
   IN_PROGRESS: { label: 'In progress', cls: 'badge-orange' },
   SUBMITTED:   { label: 'Submitted',   cls: 'badge-green' },
   REOPENED:    { label: 'Reopened',    cls: 'badge-striped' },

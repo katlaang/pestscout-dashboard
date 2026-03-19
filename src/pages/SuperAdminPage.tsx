@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, type ClipboardEvent } from 'react'
 import { useAuthStore } from '@/hooks/useAuth'
 import { adminFarmsApi, adminUsersApi, adminCacheApi } from '@/services/api'
 import CreateFarmSetupForm from '@/components/farms/CreateFarmSetupForm'
 import StructureDetailsList from '@/components/farms/StructureDetailsList'
 import FarmStructureForm from '@/components/farms/StructureForm'
+import { formatCoordinateInput, parseCoordinateInput } from '@/utils/coordinates'
 import type {
   FarmResponse, GreenhouseResponse, FieldBlockResponse, FarmStructureType,
   UserDto, FarmMemberResponse,
@@ -14,6 +15,10 @@ import type {
 import { formatDate } from '@/utils'
 
 type Tab = 'farms' | 'users' | 'cache'
+
+function preventPasswordPaste(event: ClipboardEvent<HTMLInputElement>) {
+  event.preventDefault()
+}
 
 export default function SuperAdminPage() {
   const { user } = useAuthStore()
@@ -91,6 +96,10 @@ function FarmsTab() {
   const [expandedStructureId, setExpandedStructureId] = useState<string | null>(null)
   const [members, setMembers] = useState<FarmMemberResponse[]>([])
   const [membersLoading, setMembersLoading] = useState(false)
+  const [memberCandidates, setMemberCandidates] = useState<UserDto[]>([])
+  const [memberSearch, setMemberSearch] = useState('')
+  const [selectedMemberId, setSelectedMemberId] = useState('')
+  const [memberSaving, setMemberSaving] = useState(false)
   const [licensePanel, setLicensePanel] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
@@ -136,7 +145,41 @@ function FarmsTab() {
       .then(setMembers)
       .catch(() => setMembers([]))
       .finally(() => setMembersLoading(false))
+
+    adminUsersApi.list()
+      .then(data => {
+        const eligible = data
+          .filter((user: UserDto) => !user.deleted && user.role !== 'SUPER_ADMIN' && user.role !== 'EDGE_SYNC')
+          .sort((a: UserDto, b: UserDto) => `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`))
+        setMemberCandidates(eligible)
+      })
+      .catch(() => setMemberCandidates([]))
+
+    setMemberSearch('')
+    setSelectedMemberId('')
   }, [selectedFarm])
+
+  async function handleAddMember() {
+    if (!selectedFarm) return
+    if (!selectedMemberId) {
+      flash('Choose an existing person to attach to this farm.', true)
+      return
+    }
+
+    setMemberSaving(true)
+    try {
+      await adminFarmsApi.addMember(selectedFarm.id, selectedMemberId)
+      const updatedMembers = await adminFarmsApi.listMembers(selectedFarm.id)
+      setMembers(updatedMembers)
+      setSelectedMemberId('')
+      setMemberSearch('')
+      flash('Farm member attached')
+    } catch (e: any) {
+      flash(e?.response?.data?.message ?? 'Failed to attach farm member', true)
+    } finally {
+      setMemberSaving(false)
+    }
+  }
 
   async function handleLockToggle(farm: FarmResponse) {
     const newLocked = !isLocked(farm)
@@ -178,6 +221,24 @@ function FarmsTab() {
   }
 
   const structLabel = selectedFarm?.structureType === 'FIELD' ? 'Field block' : 'Greenhouse'
+  const existingMemberIds = new Set(
+    members.map(member => member.userId ?? member.user?.id).filter(Boolean) as string[],
+  )
+  const availableMemberUsers = memberCandidates.filter(user => {
+    if (existingMemberIds.has(user.id)) return false
+    const query = memberSearch.trim().toLowerCase()
+    if (!query) return true
+    return [
+      user.firstName,
+      user.lastName,
+      user.email,
+      user.role,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  })
   const totalStructureArea = structures.reduce((sum, structure) => {
     const area = 'areaHectares' in structure ? Number(structure.areaHectares ?? 0) : 0
     return sum + (Number.isFinite(area) ? area : 0)
@@ -446,11 +507,87 @@ function FarmsTab() {
                 <div className="card-title">
                   <span>Farm members ({members.length})</span>
                 </div>
+                <div
+                  style={{
+                    marginBottom: 12,
+                    padding: 12,
+                    borderRadius: 8,
+                    border: '0.5px solid #dbe7df',
+                    background: '#f9fafb',
+                  }}
+                >
+                  <div style={{ fontSize: 12, fontWeight: 500, color: '#111827', marginBottom: 2 }}>
+                    Add existing person
+                  </div>
+                  <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 10 }}>
+                    Attach an existing user to this farm without changing their current role. Their role stays the same on every farm they belong to.
+                  </div>
+                  <input
+                    className="input"
+                    placeholder="Search by name or email"
+                    value={memberSearch}
+                    onChange={event => setMemberSearch(event.target.value)}
+                    style={{ marginBottom: 10 }}
+                  />
+                  <div
+                    style={{
+                      maxHeight: 180,
+                      overflowY: 'auto',
+                      border: '0.5px solid #e5e7eb',
+                      borderRadius: 8,
+                      background: '#fff',
+                      padding: 8,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 6,
+                    }}
+                  >
+                    {availableMemberUsers.length === 0 ? (
+                      <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                        No available people match this search.
+                      </div>
+                    ) : (
+                      availableMemberUsers.map(user => (
+                        <label
+                          key={user.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: 8,
+                            padding: '6px 8px',
+                            borderRadius: 7,
+                            cursor: 'pointer',
+                            background: selectedMemberId === user.id ? '#f0faf4' : '#fff',
+                          }}
+                        >
+                          <input
+                            type="radio"
+                            checked={selectedMemberId === user.id}
+                            onChange={() => setSelectedMemberId(user.id)}
+                          />
+                          <div>
+                            <div style={{ fontSize: 12, color: '#111827', fontWeight: 500 }}>
+                              {[user.firstName, user.lastName].filter(Boolean).join(' ') || user.email}
+                            </div>
+                            <div style={{ fontSize: 11, color: '#6b7280' }}>
+                              {user.email} · {String(user.role).replace(/_/g, ' ')}
+                            </div>
+                          </div>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+                    <button className="btn-primary" style={{ fontSize: 12 }} onClick={handleAddMember} disabled={memberSaving}>
+                      {memberSaving ? 'Adding...' : 'Add to farm'}
+                    </button>
+                  </div>
+                </div>
                 {membersLoading ? (
                   <p style={{ fontSize: 12, color: '#9ca3af', padding: '8px 0' }}>Loading…</p>
                 ) : members.length === 0 ? (
                   <p style={{ fontSize: 12, color: '#9ca3af', padding: '8px 0' }}>
-                    No members yet. Create users via the Users tab and assign them this farm.
+                    No members yet. Use the add-existing-person section above or create users via the Users tab.
                   </p>
                 ) : (
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 4 }}>
@@ -510,6 +647,8 @@ function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
   farm: FarmResponse; onSaved: (f: FarmResponse) => void; onCancel: () => void; onError: (m: string) => void
 }) {
   const [saving, setSaving] = useState(false)
+  const [latitudeInput, setLatitudeInput] = useState(formatCoordinateInput(farm.latitude))
+  const [longitudeInput, setLongitudeInput] = useState(formatCoordinateInput(farm.longitude))
   const [form, setForm] = useState<UpdateFarmRequest>({
     name: farm.name, city: farm.city ?? '', country: farm.country ?? '',
     province: farm.province ?? '', postalCode: farm.postalCode ?? '',
@@ -517,14 +656,23 @@ function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
     contactName: farm.contactName ?? '', contactEmail: farm.contactEmail ?? '',
     contactPhone: farm.contactPhone ?? '', description: farm.description ?? '',
     licensedAreaHectares: farm.licensedAreaHectares,
-    latitude: farm.latitude,
-    longitude: farm.longitude,
   })
   const s = (k: keyof UpdateFarmRequest, v: string | number | undefined) => setForm(p => ({ ...p, [k]: v }))
 
   async function save() {
+    let latitude: number | undefined
+    let longitude: number | undefined
+
+    try {
+      latitude = parseCoordinateInput(latitudeInput, 'latitude')
+      longitude = parseCoordinateInput(longitudeInput, 'longitude')
+    } catch (e: any) {
+      onError(e?.message ?? 'Latitude or longitude is invalid')
+      return
+    }
+
     setSaving(true)
-    try { onSaved(await adminFarmsApi.update(farm.id, farm, form)) }
+    try { onSaved(await adminFarmsApi.update(farm.id, farm, { ...form, latitude, longitude })) }
     catch (e: any) { onError(e?.response?.data?.message ?? 'Update failed') }
     finally { setSaving(false) }
   }
@@ -547,12 +695,12 @@ function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
             value={form.licensedAreaHectares ?? ''} onChange={e => s('licensedAreaHectares', e.target.value ? Number(e.target.value) : undefined)} />
         </FormField>
         <FormField label="Latitude">
-          <input className="input" type="number" step="any"
-            value={form.latitude ?? ''} onChange={e => s('latitude', e.target.value ? Number(e.target.value) : undefined)} />
+          <input className="input" type="text" placeholder="e.g. 51.0447 N"
+            value={latitudeInput} onChange={e => setLatitudeInput(e.target.value)} />
         </FormField>
         <FormField label="Longitude">
-          <input className="input" type="number" step="any"
-            value={form.longitude ?? ''} onChange={e => s('longitude', e.target.value ? Number(e.target.value) : undefined)} />
+          <input className="input" type="text" placeholder="e.g. 114.0719 W"
+            value={longitudeInput} onChange={e => setLongitudeInput(e.target.value)} />
         </FormField>
       </div>
       <FormField label="Address"><input className="input" value={form.address ?? ''} onChange={e => s('address', e.target.value)} /></FormField>
@@ -866,6 +1014,7 @@ function UsersTab() {
   const [farmFilter, setFarmFilter] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [showEditUser, setShowEditUser] = useState(false)
+  const [passwordResetUser, setPasswordResetUser] = useState<UserDto | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
@@ -962,6 +1111,22 @@ function UsersTab() {
               flash(`User ${u.email} created`)
             }}
             onCancel={() => setShowCreate(false)}
+            onError={msg => flash(msg, true)}
+          />
+        </Modal>
+      )}
+
+      {passwordResetUser && (
+        <Modal title="Assign temporary password" onClose={() => setPasswordResetUser(null)} maxWidth={460}>
+          <TemporaryPasswordForm
+            user={passwordResetUser}
+            onSaved={updated => {
+              setUsers(prev => prev.map(user => user.id === updated.id ? updated : user))
+              if (selectedUser?.id === updated.id) setSelectedUser(updated)
+              setPasswordResetUser(null)
+              flash('Temporary password assigned. The user must change it after login.')
+            }}
+            onCancel={() => setPasswordResetUser(null)}
             onError={msg => flash(msg, true)}
           />
         </Modal>
@@ -1127,6 +1292,13 @@ function UsersTab() {
                   {/* Actions */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                     <button
+                      onClick={() => setPasswordResetUser(selectedUser)}
+                      className="btn-secondary"
+                      style={{ width: '100%', fontSize: 12 }}
+                    >
+                      Assign temporary password
+                    </button>
+                    <button
                       onClick={() => handleToggle(selectedUser)}
                       style={{
                         padding: '7px 12px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
@@ -1173,7 +1345,6 @@ function EditUserForm({ user, farms, onSaved, onCancel, onError }: {
     country:     user.country     ?? '',
     role:        user.role        as string,
     isEnabled:   user.isEnabled   ?? true,
-    password:    '',               // blank = don't change password
   })
   const s = (k: string, v: string | boolean) => setForm(p => ({ ...p, [k]: v }))
 
@@ -1181,7 +1352,6 @@ function EditUserForm({ user, farms, onSaved, onCancel, onError }: {
     if (!form.email.trim()) { onError('Email is required'); return }
     if (!form.firstName.trim()) { onError('First name is required'); return }
     if (!form.lastName.trim()) { onError('Last name is required'); return }
-    if (form.password && form.password.length < 8) { onError('New password must be at least 8 characters'); return }
     setSaving(true)
     try {
       const body: UpdateUserRequest = {
@@ -1192,7 +1362,6 @@ function EditUserForm({ user, farms, onSaved, onCancel, onError }: {
         country:     form.country     || undefined,
         role:        form.role        as any,
         isEnabled:   form.isEnabled,
-        password:    form.password    || undefined,
       }
       onSaved(await adminUsersApi.update(user.id, body))
     } catch (e: any) {
@@ -1229,12 +1398,6 @@ function EditUserForm({ user, farms, onSaved, onCancel, onError }: {
         </FormField>
       </div>
 
-      <FormField label="New temporary password (leave blank to keep existing)">
-        <input className="input" type="password" placeholder="Min 8 characters"
-          value={form.password} onChange={e => s('password', e.target.value)}
-          autoComplete="new-password" />
-      </FormField>
-
       <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: '#374151', cursor: 'pointer' }}>
         <input type="checkbox" checked={!!form.isEnabled} onChange={e => s('isEnabled', e.target.checked)} />
         Account enabled (user can log in)
@@ -1257,6 +1420,84 @@ function EditUserForm({ user, farms, onSaved, onCancel, onError }: {
 }
 
 // ─── CREATE USER FORM ─────────────────────────────────────────────────────────
+
+function TemporaryPasswordForm({ user, onSaved, onCancel, onError }: {
+  user: UserDto
+  onSaved: (u: UserDto) => void
+  onCancel: () => void
+  onError: (m: string) => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const [temporaryPassword, setTemporaryPassword] = useState('')
+  const [confirmTemporaryPassword, setConfirmTemporaryPassword] = useState('')
+
+  async function submit() {
+    if (!temporaryPassword || !confirmTemporaryPassword) {
+      onError('Temporary password and confirmation are required.')
+      return
+    }
+    if (temporaryPassword.length < 8) {
+      onError('Temporary password must be at least 8 characters.')
+      return
+    }
+    if (temporaryPassword !== confirmTemporaryPassword) {
+      onError('Temporary password and confirmation must match.')
+      return
+    }
+
+    setSaving(true)
+    try {
+      onSaved(await adminUsersApi.setTemporaryPassword(user.id, { temporaryPassword }))
+    } catch (e: any) {
+      onError(e?.response?.data?.message ?? 'Failed to assign temporary password.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div
+        style={{
+          padding: '10px 12px',
+          borderRadius: 8,
+          background: '#fffbf0',
+          border: '0.5px solid #fde68a',
+          fontSize: 12,
+          color: '#92400e',
+        }}
+      >
+        Assign a new temporary password for {user.firstName} {user.lastName}. They will be required to change it after login.
+      </div>
+      <FormField label="Temporary password">
+        <input
+          className="input"
+          type="password"
+          value={temporaryPassword}
+          onChange={event => setTemporaryPassword(event.target.value)}
+          onPaste={preventPasswordPaste}
+          autoComplete="new-password"
+        />
+      </FormField>
+      <FormField label="Confirm temporary password">
+        <input
+          className="input"
+          type="password"
+          value={confirmTemporaryPassword}
+          onChange={event => setConfirmTemporaryPassword(event.target.value)}
+          onPaste={preventPasswordPaste}
+          autoComplete="new-password"
+        />
+      </FormField>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button className="btn-secondary" type="button" onClick={onCancel} disabled={saving}>Cancel</button>
+        <button className="btn-primary" type="button" onClick={submit} disabled={saving}>
+          {saving ? 'Assigning...' : 'Assign temporary password'}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 const NULL_UUID = '00000000-0000-0000-0000-000000000000'
 
@@ -1307,7 +1548,7 @@ function CreateUserForm({ onCreated, onCancel, onError }: { onCreated: (u: UserD
         <FormField label="First name *"><input className="input" value={form.firstName} onChange={e => set('firstName', e.target.value)} /></FormField>
         <FormField label="Last name *"><input className="input" value={form.lastName} onChange={e => set('lastName', e.target.value)} /></FormField>
         <FormField label="Email *"><input className="input" type="email" value={form.email} onChange={e => set('email', e.target.value)} /></FormField>
-        <FormField label="Temporary password *"><input className="input" type="password" value={form.password} onChange={e => set('password', e.target.value)} /></FormField>
+        <FormField label="Temporary password *"><input className="input" type="password" value={form.password} onChange={e => set('password', e.target.value)} onPaste={preventPasswordPaste} /></FormField>
         <FormField label="Role">
           <select className="input" value={form.role} onChange={e => set('role', e.target.value)}>
             <option value="SUPER_ADMIN">Super Admin</option>

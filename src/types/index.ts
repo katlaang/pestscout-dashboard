@@ -92,9 +92,17 @@ export type SpeciesCode =
   | 'CATERPILLARS' | 'FALSE_CODLING_MOTH' | 'PEST_OTHER'
   | 'DOWNY_MILDEW' | 'POWDERY_MILDEW' | 'BOTRYTIS'
   | 'VERTICILLIUM' | 'BACTERIAL_WILT' | 'DISEASE_OTHER'
-  | 'BENEFICIAL_PP'
+  | 'BENEFICIAL_PP' | 'BENEFICIAL_OTHER'
 
 export type ObservationCategory = 'PEST' | 'DISEASE' | 'BENEFICIAL'
+export type CustomSpeciesCategory = ObservationCategory
+
+export interface CustomSpecies {
+  id: string
+  category: CustomSpeciesCategory
+  name: string
+  code: string
+}
 
 export interface ScoutingObservationDto {
   id: string
@@ -103,7 +111,10 @@ export interface ScoutingObservationDto {
   sessionTargetId?: string
   greenhouseId?: string
   fieldBlockId?: string
-  speciesCode: SpeciesCode
+  speciesCode?: SpeciesCode
+  customSpeciesId?: string
+  customSpeciesName?: string
+  customSpeciesCode?: string
   category: ObservationCategory
   bayIndex: number
   bayTag?: string
@@ -165,6 +176,7 @@ export interface ScoutingSessionDetailDto {
   weatherNotes?: string
   notes?: string
   surveySpeciesCodes?: SpeciesCode[]
+  customSurveySpeciesIds?: string[]
   defaultPhotoSourceType?: string
   startedAt?: string
   submittedAt?: string
@@ -225,6 +237,21 @@ export interface HeatmapResponse {
   month?: number
   sections: HeatmapSectionResponse[]
   legend: SeverityLegendEntry[]
+}
+
+export interface MonthlyHeatmapWeekResponse {
+  weekNumber: number
+  rangeStart?: string
+  rangeEnd?: string
+  sections: HeatmapSectionResponse[]
+}
+
+export interface MonthlyHeatmapResponse {
+  farmId: string
+  year: number
+  month: number
+  weeklyHeatmaps: MonthlyHeatmapWeekResponse[]
+  legend?: SeverityLegendEntry[]
 }
 
 export interface DashboardSummaryDto {
@@ -598,6 +625,17 @@ export interface ChangePasswordRequest {
   newPassword: string
 }
 
+export interface UpdateMyProfileRequest {
+  firstName?: string
+  lastName?: string
+  phoneNumber?: string
+  email?: string
+}
+
+export interface TemporaryPasswordRequest {
+  temporaryPassword: string
+}
+
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
 export interface BootstrapSuperAdminRequest {
@@ -621,7 +659,8 @@ export interface ErrorResponse {
 export interface CreateObservationRequest {
   greenhouseId?: string
   fieldBlockId?: string
-  speciesCode: SpeciesCode
+  speciesCode?: SpeciesCode
+  customSpeciesId?: string
   category: ObservationCategory
   bayIndex: number
   bayTag?: string
