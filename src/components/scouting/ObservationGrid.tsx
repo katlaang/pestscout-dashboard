@@ -1,15 +1,28 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react'
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type CSSProperties,
+} from 'react'
 import CustomSpeciesModal from '@/components/scouting/CustomSpeciesModal'
-import { adminFarmsApi, customSpeciesApi, observationsApi } from '@/services/api'
+import { adminFarmsApi, customSpeciesApi, observationsApi, scoutingPhotosApi } from '@/services/api'
 import type {
-  CustomSpecies,
-  ObservationCategory,
+  ConfirmScoutingPhotoRequest,
   CreateObservationRequest,
+  CustomSpecies,
+  FieldBlockResponse,
+  GreenhouseResponse,
+  ObservationCategory,
+  RegisterScoutingPhotoResponse,
   ScoutingObservationDto,
+  ScoutingPhotoDto,
   ScoutingSessionSectionDto,
   SpeciesCode,
-  GreenhouseResponse,
-  FieldBlockResponse,
+  UpdateObservationRequest,
 } from '@/types'
 import { mergeCustomSpecies } from '@/utils/customSpecies'
 
@@ -53,6 +66,9 @@ const OTHER_ACTION_LABEL: Record<ObservationCategory, string> = {
   BENEFICIAL: 'Other beneficial insect',
 }
 
+const SPOT_INDEX = 1
+const MAX_CELL_PHOTOS = 5
+
 function countColor(n: number | null, category: ObservationCategory): { bg: string; fg: string } {
   if (n === null) return { bg: '#ffffff', fg: '#111827' }
   if (category === 'BENEFICIAL' && n === 0) return { bg: '#111827', fg: '#ffffff' }
@@ -65,10 +81,10 @@ function countColor(n: number | null, category: ObservationCategory): { bg: stri
 
 function columnMinWidth(col: GridColumn): number {
   if (col.kind === 'custom') {
-    return Math.max(112, Math.min(180, col.label.length * 8))
+    return Math.max(118, Math.min(200, col.label.length * 8))
   }
 
-  return Math.max(58, col.label.length * 9)
+  return Math.max(62, col.label.length * 9)
 }
 
 function columnKeyForObservation(observation: ScoutingObservationDto) {
@@ -79,6 +95,10 @@ function columnKeyForObservation(observation: ScoutingObservationDto) {
 
 function obsKey(bayIndex: number, benchIndex: number, columnKey: string) {
   return `${bayIndex}:${benchIndex}:${columnKey}`
+}
+
+function photoCellKey(sessionTargetId: string, bayIndex: number, benchIndex: number, spotIndex: number = SPOT_INDEX) {
+  return `${sessionTargetId}:${bayIndex}:${benchIndex}:${spotIndex}`
 }
 
 function parseCountValue(value: string): number | null {
@@ -269,56 +289,112 @@ interface GridCellMeta {
   col: GridColumn
 }
 
-function EditableCell({
-  value,
-  count,
-  col,
-  onValueChange,
-}: {
-  value: string
-  count: number | null
-  col: GridColumn
-  onValueChange: (value: string) => void
-}) {
-  const { bg } = countColor(count, col.category)
+type CellPhotoMap = Record<string, ScoutingPhotoDto[]>
 
-  return (
-    <td style={{ background: bg, padding: 0, minWidth: columnMinWidth(col) }}>
-      <input
-        type="text"
-        inputMode="numeric"
-        pattern="[0-9]*"
-        value={value}
-        placeholder=""
-        onChange={event => {
-          const nextValue = event.target.value
-          if (nextValue === '' || /^\d+$/.test(nextValue)) {
-            onValueChange(nextValue)
-          }
-        }}
-        style={{
-          width: '100%',
-          height: '100%',
-          border: 'none',
-          background: 'transparent',
-          textAlign: 'center',
-          color: countColor(count, col.category).fg,
-          fontSize: 11,
-          padding: '5px 2px',
-          fontFamily: 'DM Mono, monospace',
-          outline: 'none',
-          cursor: 'text',
-          MozAppearance: 'textfield',
-        } as React.CSSProperties}
-      />
-    </td>
-  )
+interface PendingCellPhoto {
+  tempId: string
+  localPhotoId: string
+  fileName: string
+  previewUrl?: string
+  capturedAt: string
+  status: 'uploading' | 'error'
+  errorMessage?: string
+}
+
+type PendingCellPhotoMap = Record<string, PendingCellPhoto[]>
+
+interface ActiveCellState {
+  observationKey: string
+  photoKey: string
+  bayIndex: number
+  bayTag: string
+  benchIndex: number
+  benchTag: string
+  col: GridColumn
+  draftCount: string
+  draftNotes: string
+  committedObservation: ScoutingObservationDto | null
+  dirty: boolean
+  saving: boolean
+  clearLoading: boolean
+  saveError: string | null
+}
+
+function toPhotoMap(photos: ScoutingPhotoDto[]): CellPhotoMap {
+  const next: CellPhotoMap = {}
+
+  photos.forEach(photo => {
+    const key = photoCellKey(photo.sessionTargetId, photo.bayIndex, photo.benchIndex, photo.spotIndex || SPOT_INDEX)
+    next[key] = next[key] ? [...next[key], photo] : [photo]
+  })
+
+  return next
+}
+
+function makeClientPhotoId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+
+  return `photo-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function photoPreviewUrl(photo: ScoutingPhotoDto): string | null {
+  const value = photo.objectKey?.trim()
+  if (!value) return null
+  if (/^https?:\/\//i.test(value) || value.startsWith('blob:') || value.startsWith('data:')) {
+    return value
+  }
+  return null
+}
+
+function formatCapturedAt(value?: string | null) {
+  if (!value) return ''
+  try {
+    return new Date(value).toLocaleString()
+  } catch {
+    return value
+  }
+}
+
+async function uploadRegisteredPhoto(file: File, registered: RegisterScoutingPhotoResponse) {
+  if (!registered.uploadUrl) {
+    throw new Error('Photo upload URL was not returned.')
+  }
+
+  const headers: Record<string, string> = { ...(registered.uploadHeaders ?? {}) }
+  if (!Object.keys(headers).some(key => key.toLowerCase() === 'content-type')) {
+    headers['Content-Type'] = file.type || 'application/octet-stream'
+  }
+
+  const response = await fetch(registered.uploadUrl, {
+    method: registered.uploadMethod ?? 'PUT',
+    headers,
+    body: file,
+  })
+
+  if (!response.ok) {
+    throw new Error('Photo upload failed.')
+  }
+
+  if (!registered.objectKey) {
+    throw new Error('Photo storage key was not returned.')
+  }
+
+  const confirmBody: ConfirmScoutingPhotoRequest = {
+    sessionId: registered.sessionId,
+    localPhotoId: registered.localPhotoId,
+    objectKey: registered.objectKey,
+  }
+
+  return scoutingPhotosApi.confirm(confirmBody)
 }
 
 interface ObservationGridProps {
   section: ScoutingSessionSectionDto
   sessionId: string
   isEditable: boolean
+  canEditNotes?: boolean
   farmId: string
   surveySpeciesCodes?: SpeciesCode[]
   customSurveySpeciesIds?: string[]
@@ -332,12 +408,12 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
   section,
   sessionId,
   isEditable,
+  canEditNotes: canEditNotesProp,
   farmId,
   surveySpeciesCodes,
   customSurveySpeciesIds,
 }, ref) {
   const [obsMap, setObsMap] = useState<Record<string, ScoutingObservationDto>>({})
-  const [draftValues, setDraftValues] = useState<Record<string, string>>({})
   const [greenhouse, setGreenhouse] = useState<GreenhouseResponse | null>(null)
   const [fieldBlock, setFieldBlock] = useState<FieldBlockResponse | null>(null)
   const [customSpeciesByCategory, setCustomSpeciesByCategory] = useState<Record<ObservationCategory, CustomSpecies[]>>({
@@ -347,6 +423,31 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
   })
   const [modalCategory, setModalCategory] = useState<ObservationCategory | null>(null)
   const [createdCustomSpeciesIds, setCreatedCustomSpeciesIds] = useState<string[]>([])
+  const [photoMap, setPhotoMap] = useState<CellPhotoMap>({})
+  const [pendingPhotoMap, setPendingPhotoMap] = useState<PendingCellPhotoMap>({})
+  const [activeCell, setActiveCell] = useState<ActiveCellState | null>(null)
+
+  const saveTimerRef = useRef<number | null>(null)
+  const activeCellRef = useRef<ActiveCellState | null>(null)
+  const pendingPhotoMapRef = useRef<PendingCellPhotoMap>({})
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const canEditNotes = canEditNotesProp ?? isEditable
+
+  useEffect(() => {
+    activeCellRef.current = activeCell
+  }, [activeCell])
+
+  useEffect(() => {
+    pendingPhotoMapRef.current = pendingPhotoMap
+  }, [pendingPhotoMap])
+
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -378,17 +479,45 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     for (const observation of section.observations) {
       if (!observation.deleted) {
         const key = obsKey(observation.bayIndex, observation.benchIndex, columnKeyForObservation(observation))
-        if (!map[key] || observation.count > map[key].count) {
-          map[key] = observation
-        }
+        map[key] = observation
       }
     }
     setObsMap(map)
   }, [section.observations])
 
   useEffect(() => {
-    setDraftValues({})
+    let alive = true
+
+    scoutingPhotosApi.listSession(sessionId)
+      .then(photos => {
+        if (!alive) return
+        setPhotoMap(toPhotoMap(photos))
+      })
+      .catch(() => {
+        if (!alive) return
+        setPhotoMap({})
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [sessionId])
+
+  useEffect(() => {
+    setActiveCell(null)
   }, [section.targetId])
+
+  useEffect(() => {
+    return () => {
+      Object.values(pendingPhotoMapRef.current)
+        .flat()
+        .forEach(photo => {
+          if (photo.previewUrl) {
+            URL.revokeObjectURL(photo.previewUrl)
+          }
+        })
+    }
+  }, [])
 
   useEffect(() => {
     if (!section.greenhouseId || !farmId) {
@@ -489,6 +618,7 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
   const diseaseCount = visibleColumns.filter(column => column.category === 'DISEASE').length
 
   const rows = useMemo(() => buildRows(section, greenhouse, fieldBlock), [section, greenhouse, fieldBlock])
+
   const rowRemarksByKey = useMemo(() => {
     const remarks: Record<string, string> = {}
 
@@ -531,16 +661,15 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     return map
   }, [rows, visibleColumns])
 
-  function setDraftValueForKey(key: string, nextValue: string, committedObs?: ScoutingObservationDto) {
-    setDraftValues(previous => {
-      const committedValue = committedObs ? String(committedObs.count) : ''
-      if (nextValue === committedValue) {
-        if (!(key in previous)) return previous
+  function setPendingPhotosForKey(key: string, updater: (previous: PendingCellPhoto[]) => PendingCellPhoto[]) {
+    setPendingPhotoMap(previous => {
+      const nextForKey = updater(previous[key] ?? [])
+      if (nextForKey.length === 0) {
         const next = { ...previous }
         delete next[key]
         return next
       }
-      return { ...previous, [key]: nextValue }
+      return { ...previous, [key]: nextForKey }
     })
   }
 
@@ -558,81 +687,201 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     setModalCategory(null)
   }
 
-  async function flushPendingChanges() {
-    const pendingEntries = Object.entries(draftValues)
-    if (pendingEntries.length === 0) return
+  function openCellEditor(meta: GridCellMeta) {
+    const observationKey = obsKey(meta.bayIndex, meta.benchIndex, meta.col.key)
+    const committedObservation = obsMap[observationKey] ?? null
+    setActiveCell({
+      observationKey,
+      photoKey: photoCellKey(section.targetId, meta.bayIndex, meta.benchIndex, SPOT_INDEX),
+      bayIndex: meta.bayIndex,
+      bayTag: meta.bayTag,
+      benchIndex: meta.benchIndex,
+      benchTag: meta.benchTag,
+      col: meta.col,
+      draftCount: committedObservation ? String(committedObservation.count) : '',
+      draftNotes: committedObservation?.notes ?? '',
+      committedObservation,
+      dirty: false,
+      saving: false,
+      clearLoading: false,
+      saveError: null,
+    })
+  }
 
-    let nextObsMap = { ...obsMap }
-    let nextDraftValues = { ...draftValues }
+  async function saveActiveCellDraft(force = false) {
+    const current = activeCellRef.current
+    if (!current || (!isEditable && !canEditNotes)) return
+    if (!current.dirty && !force) return
 
-    try {
-      for (const [key, rawValue] of pendingEntries) {
-        const trimmedValue = rawValue.trim()
-        const existingObservation = nextObsMap[key]
-        const committedValue = existingObservation ? String(existingObservation.count) : ''
+    const trimmedCount = current.draftCount.trim()
+    const parsedCount = parseCountValue(trimmedCount)
+    const trimmedNotes = current.draftNotes.trim()
 
-        if (trimmedValue === committedValue) {
-          delete nextDraftValues[key]
-          continue
-        }
-
-        if (trimmedValue === '') {
-          if (existingObservation) {
-            await observationsApi.delete(sessionId, existingObservation.id)
-            delete nextObsMap[key]
-          }
-          delete nextDraftValues[key]
-          continue
-        }
-
-        const parsedCount = parseCountValue(trimmedValue)
-        if (parsedCount === null) continue
-
-        if (existingObservation) {
-          const updatedObservation = await observationsApi.update(sessionId, existingObservation.id, {
-            count: parsedCount,
-          })
-          nextObsMap[key] = updatedObservation
-          delete nextDraftValues[key]
-          continue
-        }
-
-        const cellMeta = cellMetaByKey.get(key)
-        if (!cellMeta) continue
-
-        const createBody: CreateObservationRequest = {
-          greenhouseId: section.greenhouseId,
-          fieldBlockId: section.fieldBlockId,
-          ...(cellMeta.col.kind === 'custom'
-            ? { customSpeciesId: cellMeta.col.customSpeciesId }
-            : { speciesCode: cellMeta.col.code }),
-          category: cellMeta.col.category,
-          bayIndex: cellMeta.bayIndex,
-          bayTag: cellMeta.bayTag,
-          benchIndex: cellMeta.benchIndex,
-          benchTag: cellMeta.benchTag,
-          count: parsedCount,
-        }
-
-        const createdObservation = await observationsApi.create(sessionId, createBody)
-        nextObsMap[key] = createdObservation
-        delete nextDraftValues[key]
-      }
-    } catch (error) {
-      setObsMap(nextObsMap)
-      setDraftValues(nextDraftValues)
-      throw error
+    if (!isEditable && !current.committedObservation) {
+      return
     }
 
-    setObsMap(nextObsMap)
-    setDraftValues(nextDraftValues)
+    if (isEditable && (trimmedCount === '' || parsedCount === null)) {
+      return
+    }
+
+    const resolvedCount = parsedCount ?? current.committedObservation?.count
+    if (resolvedCount == null) {
+      return
+    }
+
+    setActiveCell(previous => previous && previous.observationKey === current.observationKey
+      ? { ...previous, saving: true, saveError: null }
+      : previous)
+
+    try {
+      let savedObservation: ScoutingObservationDto
+      if (current.committedObservation) {
+        const updateBody: UpdateObservationRequest = {
+          sessionTargetId: section.targetId,
+          greenhouseId: section.greenhouseId,
+          fieldBlockId: section.fieldBlockId,
+          ...(current.col.kind === 'custom'
+            ? { customSpeciesId: current.col.customSpeciesId }
+            : { speciesCode: current.col.code }),
+          category: current.col.category,
+          bayIndex: current.bayIndex,
+          bayTag: current.bayTag,
+          benchIndex: current.benchIndex,
+          benchTag: current.benchTag,
+          spotIndex: SPOT_INDEX,
+          count: resolvedCount,
+          notes: canEditNotes ? (trimmedNotes || undefined) : current.committedObservation.notes,
+          version: current.committedObservation.version,
+        }
+        savedObservation = await observationsApi.update(sessionId, current.committedObservation.id, updateBody)
+      } else {
+        const createBody: CreateObservationRequest = {
+          sessionTargetId: section.targetId,
+          greenhouseId: section.greenhouseId,
+          fieldBlockId: section.fieldBlockId,
+          ...(current.col.kind === 'custom'
+            ? { customSpeciesId: current.col.customSpeciesId }
+            : { speciesCode: current.col.code }),
+          category: current.col.category,
+          bayIndex: current.bayIndex,
+          bayTag: current.bayTag,
+          benchIndex: current.benchIndex,
+          benchTag: current.benchTag,
+          spotIndex: SPOT_INDEX,
+          count: resolvedCount,
+          notes: trimmedNotes || undefined,
+        }
+        savedObservation = await observationsApi.create(sessionId, createBody)
+      }
+
+      setObsMap(previous => ({
+        ...previous,
+        [current.observationKey]: savedObservation,
+      }))
+
+      setActiveCell(previous => {
+        if (!previous || previous.observationKey !== current.observationKey) return previous
+        return {
+          ...previous,
+          committedObservation: savedObservation,
+          draftCount: String(savedObservation.count),
+          draftNotes: savedObservation.notes ?? '',
+          dirty: false,
+          saving: false,
+          saveError: null,
+        }
+      })
+    } catch (error: any) {
+      setActiveCell(previous => {
+        if (!previous || previous.observationKey !== current.observationKey) return previous
+        return {
+          ...previous,
+          saving: false,
+          saveError: error?.response?.data?.message ?? 'Could not save this cell yet.',
+        }
+      })
+      throw error
+    }
+  }
+
+  async function clearActiveCell() {
+    const current = activeCellRef.current
+    if (!current) return
+
+    if (!current.committedObservation) {
+      setActiveCell(previous => previous ? {
+        ...previous,
+        draftCount: '',
+        draftNotes: '',
+        dirty: false,
+        saveError: null,
+      } : previous)
+      return
+    }
+
+    setActiveCell(previous => previous && previous.observationKey === current.observationKey
+      ? { ...previous, clearLoading: true, saveError: null }
+      : previous)
+
+    try {
+      await observationsApi.delete(sessionId, current.committedObservation.id)
+      setObsMap(previous => {
+        const next = { ...previous }
+        delete next[current.observationKey]
+        return next
+      })
+      setActiveCell(previous => previous && previous.observationKey === current.observationKey
+        ? {
+            ...previous,
+            committedObservation: null,
+            draftCount: '',
+            draftNotes: '',
+            dirty: false,
+            saving: false,
+            clearLoading: false,
+            saveError: null,
+          }
+        : previous)
+    } catch (error: any) {
+      setActiveCell(previous => previous && previous.observationKey === current.observationKey
+        ? {
+            ...previous,
+            clearLoading: false,
+            saveError: error?.response?.data?.message ?? 'Could not clear this cell.',
+          }
+        : previous)
+    }
+  }
+
+  async function flushPendingChanges() {
+    await saveActiveCellDraft(true)
   }
 
   useImperativeHandle(ref, () => ({
     flushPendingChanges,
   }), [flushPendingChanges])
 
-  const thBase: React.CSSProperties = {
+  useEffect(() => {
+    if (!activeCell || (!isEditable && !canEditNotes) || !activeCell.dirty) return
+    if (activeCell.draftCount.trim() === '') return
+
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current)
+    }
+
+    saveTimerRef.current = window.setTimeout(() => {
+      void saveActiveCellDraft()
+    }, 700)
+
+    return () => {
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current)
+      }
+    }
+  }, [activeCell?.observationKey, activeCell?.draftCount, activeCell?.draftNotes, activeCell?.dirty, canEditNotes, isEditable])
+
+  const thBase: CSSProperties = {
     padding: '5px 6px',
     fontSize: 10,
     fontWeight: 600,
@@ -642,11 +891,222 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     letterSpacing: '0.4px',
   }
 
-  const tdBase: React.CSSProperties = {
+  const tdBase: CSSProperties = {
     padding: '5px 8px',
     fontSize: 11,
     border: '0.5px solid #e5e7eb',
     whiteSpace: 'nowrap',
+  }
+
+  const currentCellPhotos = activeCell ? photoMap[activeCell.photoKey] ?? [] : []
+  const currentPendingPhotos = activeCell ? pendingPhotoMap[activeCell.photoKey] ?? [] : []
+  const currentPhotoCount = currentCellPhotos.length + currentPendingPhotos.length
+  const canEditCurrentCellNotes = !!activeCell && canEditNotes && (isEditable || !!activeCell.committedObservation)
+  const canSaveCurrentCell = !!activeCell && (isEditable ? activeCell.draftCount.trim() !== '' : !!activeCell.committedObservation)
+
+  async function handleModalClose() {
+    if (activeCell?.dirty && activeCell.draftCount.trim() !== '') {
+      try {
+        await saveActiveCellDraft(true)
+      } catch {
+        return
+      }
+    }
+    setActiveCell(null)
+  }
+
+  function removePendingPhoto(cellKey: string, tempId: string) {
+    setPendingPhotosForKey(cellKey, previous => {
+      const target = previous.find(item => item.tempId === tempId)
+      if (target?.previewUrl) {
+        URL.revokeObjectURL(target.previewUrl)
+      }
+      return previous.filter(item => item.tempId !== tempId)
+    })
+  }
+
+  async function addPhotoForCell(file: File, cell: ActiveCellState) {
+    const localPhotoId = makeClientPhotoId()
+    const tempId = `pending:${localPhotoId}`
+    const previewUrl = URL.createObjectURL(file)
+    const capturedAt = new Date().toISOString()
+
+    setPendingPhotosForKey(cell.photoKey, previous => [
+      ...previous,
+      {
+        tempId,
+        localPhotoId,
+        fileName: file.name,
+        previewUrl,
+        capturedAt,
+        status: 'uploading',
+      },
+    ])
+
+    try {
+      const registered = await scoutingPhotosApi.register({
+        sessionId,
+        sessionTargetId: section.targetId,
+        bayIndex: cell.bayIndex,
+        bayTag: cell.bayTag,
+        benchIndex: cell.benchIndex,
+        benchTag: cell.benchTag,
+        spotIndex: SPOT_INDEX,
+        localPhotoId,
+        purpose: 'Cell photo',
+        sourceType: 'SCOUT_HANDHELD',
+        capturedAt,
+      })
+
+      const confirmed = await uploadRegisteredPhoto(file, registered)
+
+      removePendingPhoto(cell.photoKey, tempId)
+      setPhotoMap(previous => ({
+        ...previous,
+        [cell.photoKey]: [...(previous[cell.photoKey] ?? []), confirmed],
+      }))
+    } catch (error: any) {
+      setPendingPhotosForKey(cell.photoKey, previous =>
+        previous.map(item => item.tempId === tempId
+          ? {
+              ...item,
+              status: 'error',
+              errorMessage: error?.response?.data?.message ?? error?.message ?? 'Upload failed.',
+            }
+          : item),
+      )
+    }
+  }
+
+  async function handlePhotoInputChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    const cell = activeCellRef.current
+    if (!cell || files.length === 0) return
+
+    const existingCount = (photoMap[cell.photoKey] ?? []).length + (pendingPhotoMap[cell.photoKey] ?? []).length
+    const remainingSlots = Math.max(MAX_CELL_PHOTOS - existingCount, 0)
+
+    for (const file of files.slice(0, remainingSlots)) {
+      void addPhotoForCell(file, cell)
+    }
+  }
+
+  async function handleDeletePhoto(photo: ScoutingPhotoDto) {
+    const key = photoCellKey(photo.sessionTargetId, photo.bayIndex, photo.benchIndex, photo.spotIndex || SPOT_INDEX)
+    try {
+      await scoutingPhotosApi.delete(sessionId, photo.id)
+      setPhotoMap(previous => {
+        const nextPhotos = (previous[key] ?? []).filter(item => item.id !== photo.id)
+        if (nextPhotos.length === 0) {
+          const next = { ...previous }
+          delete next[key]
+          return next
+        }
+        return { ...previous, [key]: nextPhotos }
+      })
+    } catch {
+      // Keep local state unchanged on failure.
+    }
+  }
+
+  function renderPhotoTile(photo: ScoutingPhotoDto) {
+    const previewUrl = photoPreviewUrl(photo)
+
+    return (
+      <div
+        key={photo.id}
+        style={{
+          border: '0.5px solid #d1d5db',
+          borderRadius: 8,
+          overflow: 'hidden',
+          background: '#ffffff',
+        }}
+      >
+        {previewUrl ? (
+          <img
+            src={previewUrl}
+            alt="Cell photo"
+            style={{ width: '100%', height: 88, objectFit: 'cover', display: 'block' }}
+          />
+        ) : (
+          <div style={{
+            height: 88,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: '#f9fafb',
+            color: '#6b7280',
+            fontSize: 24,
+          }}>
+            📷
+          </div>
+        )}
+        <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: 10, fontWeight: 600, color: '#111827' }}>Saved photo</span>
+          <span style={{ fontSize: 10, color: '#6b7280' }}>{formatCapturedAt(photo.capturedAt)}</span>
+          <span style={{ fontSize: 10, color: '#9ca3af' }}>{photo.syncStatus}</span>
+          {isEditable && (
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ fontSize: 11, padding: '4px 8px', alignSelf: 'flex-start' }}
+              onClick={() => handleDeletePhoto(photo)}
+            >
+              Delete
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderPendingPhotoTile(photo: PendingCellPhoto) {
+    return (
+      <div
+        key={photo.tempId}
+        style={{
+          border: '0.5px solid #d1d5db',
+          borderRadius: 8,
+          overflow: 'hidden',
+          background: '#ffffff',
+        }}
+      >
+        {photo.previewUrl ? (
+          <img
+            src={photo.previewUrl}
+            alt="Pending cell photo"
+            style={{ width: '100%', height: 88, objectFit: 'cover', display: 'block' }}
+          />
+        ) : (
+          <div style={{
+            height: 88,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: '#f9fafb',
+            color: '#6b7280',
+            fontSize: 24,
+          }}>
+            📷
+          </div>
+        )}
+        <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: 10, fontWeight: 600, color: '#111827' }}>{photo.fileName}</span>
+          <span style={{ fontSize: 10, color: photo.status === 'error' ? '#b91c1c' : '#92400e' }}>
+            {photo.status === 'error' ? (photo.errorMessage ?? 'Upload failed') : 'Uploading...'}
+          </span>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ fontSize: 11, padding: '4px 8px', alignSelf: 'flex-start' }}
+            onClick={() => activeCell && removePendingPhoto(activeCell.photoKey, photo.tempId)}
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    )
   }
 
   if (rows.length === 0 && !isEditable) {
@@ -766,38 +1226,68 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
 
                   {visibleColumns.map(col => {
                     const key = obsKey(row.bayIndex, row.benchIndex, col.key)
-                    const obs = obsMap[key]
-                    const hasDraftValue = Object.prototype.hasOwnProperty.call(draftValues, key)
-                    const displayValue = hasDraftValue ? draftValues[key] : obs ? String(obs.count) : ''
+                    const meta = cellMetaByKey.get(key)!
+                    const savedObservation = obsMap[key]
+                    const isActiveCell = activeCell?.observationKey === key
+                    const draftValue = isActiveCell ? activeCell?.draftCount ?? '' : undefined
+                    const displayValue = typeof draftValue === 'string'
+                      ? draftValue
+                      : savedObservation
+                      ? String(savedObservation.count)
+                      : ''
+                    const displayCount = parseCountValue(displayValue)
+                    const { bg, fg } = countColor(displayCount, col.category)
+                    const cellPhotoKey = photoCellKey(section.targetId, row.bayIndex, row.benchIndex, SPOT_INDEX)
+                    const totalPhotos = (photoMap[cellPhotoKey] ?? []).length + (pendingPhotoMap[cellPhotoKey] ?? []).length
 
-                    if (isEditable) {
-                      return (
-                        <EditableCell
-                          key={col.key}
-                          value={displayValue}
-                          count={parseCountValue(displayValue)}
-                          col={col}
-                          onValueChange={nextValue => setDraftValueForKey(key, nextValue, obs)}
-                        />
-                      )
-                    }
-
-                    const count = obs?.count ?? null
-                    const { bg, fg } = countColor(count, col.category)
                     return (
-                      <td
-                        key={col.key}
-                        style={{
-                          ...tdBase,
-                          background: bg,
-                          color: fg,
-                          textAlign: 'center',
-                          fontFamily: 'DM Mono, monospace',
-                          fontWeight: count !== null && count > 0 ? 600 : 400,
-                          minWidth: columnMinWidth(col),
-                        }}
-                      >
-                        {count !== null ? count : ''}
+                      <td key={col.key} style={{ background: bg, padding: 0, minWidth: columnMinWidth(col) }}>
+                        <button
+                          type="button"
+                          onClick={() => openCellEditor(meta)}
+                          style={{
+                            width: '100%',
+                            minHeight: 42,
+                            border: 'none',
+                            background: 'transparent',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'stretch',
+                            justifyContent: 'center',
+                            padding: '2px 4px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <span
+                            style={{
+                              textAlign: 'center',
+                              color: fg,
+                              fontSize: 11,
+                              fontFamily: 'DM Mono, monospace',
+                              fontWeight: displayCount !== null && displayCount > 0 ? 600 : 400,
+                              lineHeight: 1.2,
+                              minHeight: 14,
+                            }}
+                          >
+                            {displayValue}
+                          </span>
+                          <span
+                            style={{
+                              marginTop: 4,
+                              display: 'flex',
+                              justifyContent: 'center',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontSize: 9,
+                              color: fg,
+                              opacity: displayCount === null ? 0.85 : 1,
+                              lineHeight: 1,
+                            }}
+                          >
+                            <span aria-hidden="true">📷</span>
+                            <span>{totalPhotos}/{MAX_CELL_PHOTOS}</span>
+                          </span>
+                        </button>
                       </td>
                     )
                   })}
@@ -836,6 +1326,197 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
         onClose={() => setModalCategory(null)}
         onCreated={handleCustomSpeciesCreated}
       />
+
+      {activeCell && (
+        <div
+          onClick={() => void handleModalClose()}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(17, 24, 39, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20,
+            zIndex: 80,
+          }}
+        >
+          <div
+            onClick={event => event.stopPropagation()}
+            style={{
+              width: 'min(880px, 100%)',
+              maxHeight: 'calc(100vh - 40px)',
+              overflowY: 'auto',
+              background: '#ffffff',
+              borderRadius: 14,
+              boxShadow: '0 24px 60px rgba(17, 24, 39, 0.2)',
+              border: '0.5px solid #e5e7eb',
+              padding: 20,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start' }}>
+              <div>
+                <h3 style={{ margin: 0, color: '#111827' }}>
+                  {activeCell.col.label} • {activeCell.bayTag} / {activeCell.benchTag}
+                </h3>
+                <p style={{ margin: '6px 0 0', fontSize: 12, color: '#6b7280' }}>
+                  Cell photos are attached to this Bay/Bed location. Use spot 1 for now.
+                </p>
+              </div>
+              <button type="button" className="btn-secondary" onClick={() => void handleModalClose()}>
+                Close
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) 1fr', gap: 16 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <label style={{ fontSize: 12, color: '#374151', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  Count
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    className="input"
+                    value={activeCell.draftCount}
+                    disabled={!isEditable}
+                    onChange={event => {
+                      const nextValue = event.target.value
+                      if (nextValue === '' || /^\d+$/.test(nextValue)) {
+                        setActiveCell(previous => previous ? {
+                          ...previous,
+                          draftCount: nextValue,
+                          dirty: true,
+                          saveError: null,
+                        } : previous)
+                      }
+                    }}
+                    onBlur={() => {
+                      if (activeCellRef.current?.draftCount.trim()) {
+                        void saveActiveCellDraft(true)
+                      }
+                    }}
+                    placeholder="Enter count"
+                  />
+                </label>
+
+                <label style={{ fontSize: 12, color: '#374151', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  Notes
+                  <textarea
+                    className="input"
+                    value={activeCell.draftNotes}
+                    disabled={!canEditCurrentCellNotes}
+                    rows={4}
+                    onChange={event => {
+                      setActiveCell(previous => previous ? {
+                        ...previous,
+                        draftNotes: event.target.value,
+                        dirty: true,
+                        saveError: null,
+                      } : previous)
+                    }}
+                    onBlur={() => {
+                      if (activeCellRef.current?.draftCount.trim()) {
+                        void saveActiveCellDraft(true)
+                      }
+                    }}
+                    placeholder="Optional notes for this cell"
+                    style={{ resize: 'vertical' }}
+                  />
+                </label>
+
+                {!isEditable && canEditNotes && !activeCell.committedObservation && (
+                  <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                    Remarks can only be added to cells that already have a saved count.
+                  </div>
+                )}
+
+                {activeCell.saveError && (
+                  <div style={{ fontSize: 12, color: '#b91c1c' }}>
+                    {activeCell.saveError}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {(isEditable || canEditCurrentCellNotes) && (
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      disabled={activeCell.saving || !canSaveCurrentCell}
+                      onClick={() => void saveActiveCellDraft(true)}
+                    >
+                      {activeCell.saving ? 'Saving...' : isEditable ? 'Save cell' : 'Save remarks'}
+                    </button>
+                  )}
+                  {isEditable && (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      disabled={activeCell.clearLoading || (!activeCell.committedObservation && activeCell.draftCount === '' && activeCell.draftNotes === '')}
+                      onClick={() => void clearActiveCell()}
+                    >
+                      {activeCell.clearLoading ? 'Clearing...' : 'Clear cell'}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>Photos</div>
+                    <div style={{ fontSize: 12, color: '#6b7280' }}>
+                      {currentPhotoCount}/{MAX_CELL_PHOTOS} attached to this cell
+                    </div>
+                  </div>
+                  {isEditable && (
+                    <>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        multiple
+                        style={{ display: 'none' }}
+                        onChange={handlePhotoInputChange}
+                      />
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={currentPhotoCount >= MAX_CELL_PHOTOS}
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        {currentPhotoCount >= MAX_CELL_PHOTOS ? 'Photo limit reached' : 'Add photo'}
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {(currentCellPhotos.length > 0 || currentPendingPhotos.length > 0) ? (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12 }}>
+                    {currentPendingPhotos.map(renderPendingPhotoTile)}
+                    {currentCellPhotos.map(renderPhotoTile)}
+                  </div>
+                ) : (
+                  <div style={{
+                    border: '0.5px dashed #d1d5db',
+                    borderRadius: 10,
+                    padding: '22px 16px',
+                    textAlign: 'center',
+                    fontSize: 12,
+                    color: '#9ca3af',
+                    background: '#f9fafb',
+                  }}>
+                    No photos attached to this cell yet.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 })

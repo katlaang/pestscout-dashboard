@@ -163,26 +163,38 @@ export default function AnalyticsPage() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ borderBottom: '0.5px solid #e5e7eb' }}>
-                      {['Scout', 'Observations', 'Accuracy', 'Avg time'].map(h => (
+                      {['Scout', 'Observations', 'Reviewed', 'Accuracy', 'Avg time'].map(h => (
                         <th key={h} style={{ textAlign: 'left', padding: '5px 8px 8px', fontSize: 10, fontWeight: 500, color: '#9ca3af', textTransform: 'uppercase' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {scoutPerf.map(s => (
+                      (() => {
+                        const hasReviewedComparisons = s.reviewedComparisons > 0
+                        const accuracyColor = s.accuracy >= 80 ? '#2d7a50' : s.accuracy >= 60 ? '#f59e0b' : '#e05252'
+
+                        return (
                       <tr key={s.scout} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
                         <td style={{ padding: '8px', fontWeight: 500, color: '#111827' }}>{s.scout}</td>
                         <td style={{ padding: '8px', fontFamily: 'DM Mono, monospace' }}>{s.observations}</td>
+                        <td style={{ padding: '8px', fontFamily: 'DM Mono, monospace' }}>{s.reviewedComparisons}</td>
                         <td style={{ padding: '8px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <div style={{ flex: 1, height: 4, background: '#f3f4f6', borderRadius: 2 }}>
-                              <div style={{ height: '100%', width: `${s.accuracy}%`, background: s.accuracy >= 80 ? '#2d7a50' : s.accuracy >= 60 ? '#f59e0b' : '#e05252', borderRadius: 2 }} />
+                          {hasReviewedComparisons ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <div style={{ flex: 1, height: 4, background: '#f3f4f6', borderRadius: 2 }}>
+                                <div style={{ height: '100%', width: `${s.accuracy}%`, background: accuracyColor, borderRadius: 2 }} />
+                              </div>
+                              <span style={{ fontSize: 10, color: '#374151', fontFamily: 'DM Mono, monospace', minWidth: 28 }}>{s.accuracy.toFixed(0)}%</span>
                             </div>
-                            <span style={{ fontSize: 10, color: '#374151', fontFamily: 'DM Mono, monospace', minWidth: 28 }}>{s.accuracy.toFixed(0)}%</span>
-                          </div>
+                          ) : (
+                            <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500 }}>N/A</span>
+                          )}
                         </td>
                         <td style={{ padding: '8px', color: '#6b7280', fontSize: 11 }}>{s.avgTime}</td>
                       </tr>
+                        )
+                      })()
                     ))}
                   </tbody>
                 </table>

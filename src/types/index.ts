@@ -343,6 +343,7 @@ export interface ScoutPerformanceDto {
   observations: number
   accuracy: number
   avgTime: string
+  reviewedComparisons: number
 }
 
 // ─── Super Admin ─────────────────────────────────────────────────────────────
@@ -657,6 +658,7 @@ export interface ErrorResponse {
 // ─── Observation CRUD ────────────────────────────────────────────────────────
 
 export interface CreateObservationRequest {
+  sessionTargetId?: string
   greenhouseId?: string
   fieldBlockId?: string
   speciesCode?: SpeciesCode
@@ -672,8 +674,66 @@ export interface CreateObservationRequest {
 }
 
 export interface UpdateObservationRequest {
+  sessionTargetId?: string
+  greenhouseId?: string
+  fieldBlockId?: string
+  speciesCode?: SpeciesCode
+  customSpeciesId?: string
+  category?: ObservationCategory
+  bayIndex?: number
+  bayTag?: string
+  benchIndex?: number
+  benchTag?: string
+  spotIndex?: number
   count?: number
   notes?: string
+  version?: number
+}
+
+export interface ScoutingPhotoDto {
+  id: string
+  sessionId: string
+  observationId?: string | null
+  sessionTargetId: string
+  farmId: string
+  bayIndex: number
+  bayTag?: string | null
+  benchIndex: number
+  benchTag?: string | null
+  spotIndex: number
+  localPhotoId: string
+  purpose?: string | null
+  objectKey?: string | null
+  sourceType: string
+  capturedAt?: string | null
+  updatedAt?: string | null
+  syncStatus: string
+}
+
+export interface RegisterScoutingPhotoRequest {
+  sessionId: string
+  sessionTargetId: string
+  bayIndex: number
+  bayTag?: string
+  benchIndex: number
+  benchTag?: string
+  spotIndex: number
+  localPhotoId: string
+  purpose?: string
+  sourceType: string
+  capturedAt?: string
+}
+
+export interface RegisterScoutingPhotoResponse extends ScoutingPhotoDto {
+  uploadUrl?: string
+  uploadMethod?: string
+  uploadHeaders?: Record<string, string>
+}
+
+export interface ConfirmScoutingPhotoRequest {
+  sessionId: string
+  localPhotoId: string
+  objectKey: string
 }
 
 // ─── Session Audit ────────────────────────────────────────────────────────────

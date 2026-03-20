@@ -5,6 +5,7 @@ import type {
   FarmResponse,
   ScoutingSessionDetailDto, ScoutingObservationDto,
   CreateObservationRequest, UpdateObservationRequest,
+  ScoutingPhotoDto, RegisterScoutingPhotoRequest, RegisterScoutingPhotoResponse, ConfirmScoutingPhotoRequest,
   HeatmapResponse,
   MonthlyHeatmapResponse,
   DashboardDto, DashboardSummaryDto,
@@ -330,6 +331,20 @@ export const observationsApi = {
 
   delete: (sessionId: string, obsId: string) =>
     api.delete(`/api/scouting/sessions/${sessionId}/observations/${obsId}`).then(r => r.data),
+}
+
+export const scoutingPhotosApi = {
+  listSession: (sessionId: string) =>
+    api.get<ScoutingPhotoDto[]>(`/api/scouting/photos/session/${sessionId}`).then(r => r.data),
+
+  register: (body: RegisterScoutingPhotoRequest) =>
+    api.post<RegisterScoutingPhotoResponse>('/api/scouting/photos/register', body).then(r => r.data),
+
+  confirm: (body: ConfirmScoutingPhotoRequest) =>
+    api.post<ScoutingPhotoDto>('/api/scouting/photos/confirm', body).then(r => r.data),
+
+  delete: (sessionId: string, photoId: string) =>
+    api.delete(`/api/scouting/photos/session/${sessionId}/${photoId}`).then(() => undefined),
 }
 
 // —— Farm-specific custom species ——————————————————————————————————————————————

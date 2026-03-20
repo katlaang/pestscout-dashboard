@@ -388,12 +388,12 @@ function cleanFieldBlocks() {
 
       if (assignments.length > 0) {
         const results = await Promise.allSettled(
-          assignments.map(userId => adminFarmsApi.addMember(created.id, userId)),
+          assignments.map(userId => adminUsersApi.update(userId, { farmId: created.id })),
         )
 
         const failedAssignments = results.filter(result => result.status === 'rejected').length
         if (failedAssignments > 0) {
-          onError(`Farm created, but ${failedAssignments} owner/member assignment${failedAssignments === 1 ? '' : 's'} failed. Open the farm to retry.`)
+          onError(`Farm created, but ${failedAssignments} user assignment${failedAssignments === 1 ? '' : 's'} failed. Open the farm to retry.`)
         }
       }
 
@@ -584,7 +584,7 @@ function cleanFieldBlocks() {
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 500, color: '#111827', marginBottom: 2 }}>Farm members</div>
             <div style={{ fontSize: 11, color: '#6b7280' }}>
-              Attach existing users to this farm during creation. Their current role stays the same across every farm they belong to.
+              Assign existing users to this farm during creation. If they already belong to another farm, they will be moved here.
             </div>
           </div>
           <input
@@ -607,6 +607,11 @@ function cleanFieldBlocks() {
           <div style={{ marginTop: 8, fontSize: 11, color: '#6b7280' }}>
             {memberIds.length} member{memberIds.length === 1 ? '' : 's'} selected
           </div>
+          {memberIds.length > 0 && (
+            <div style={{ marginTop: 4, fontSize: 11, color: '#6b7280' }}>
+              Selected users will be assigned to this farm as their only farm.
+            </div>
+          )}
         </div>
       </div>
 

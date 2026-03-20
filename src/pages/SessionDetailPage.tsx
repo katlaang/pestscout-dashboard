@@ -61,6 +61,7 @@ export default function SessionDetailPage() {
   const [weatherNotes,  setWeatherNotes]  = useState('')
   const [weatherSaving, setWeatherSaving] = useState(false)
   const [deleteLoading, setDeleteLoading] = useState(false)
+  const [assignedScoutName, setAssignedScoutName] = useState('')
 
   // Modals
   const [showCompleteWarn, setShowCompleteWarn] = useState(false)
@@ -120,6 +121,35 @@ export default function SessionDetailPage() {
     session?.observationTime,
     session?.weatherNotes,
   ])
+
+  useEffect(() => {
+    if (!session?.scoutId) {
+      setAssignedScoutName('')
+      return
+    }
+
+    if (user?.id === session.scoutId) {
+      setAssignedScoutName(actorLabel(user))
+      return
+    }
+
+    let alive = true
+
+    adminUsersApi.get(session.scoutId)
+      .then(scout => {
+        if (!alive) return
+        setAssignedScoutName(actorLabel(scout))
+      })
+      .catch(() => {
+        if (!alive) return
+        const fallbackScout = scouts.find(item => item.id === session.scoutId)
+        setAssignedScoutName(fallbackScout ? actorLabel(fallbackScout) : '')
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [session?.scoutId, scouts, user])
 
   useEffect(() => {
     setPlannerEditing(false)
@@ -586,6 +616,9 @@ export default function SessionDetailPage() {
             <span className={`badge ${badge?.cls ?? 'badge-gray'}`}>{badge?.label ?? session.status}</span>
           </div>
           <p style={{ fontSize: 12, color: '#9ca3af' }}>{formatDate(session.sessionDate)}</p>
+          <p style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+            Scout: {assignedScoutName || 'Unassigned'}
+          </p>
         </div>
 
         {/* ── Action buttons ── */}
@@ -669,13 +702,13 @@ export default function SessionDetailPage() {
         {[
           { label: 'Week',        value: `W${session.weekNumber}` },
           { label: 'Date',        value: formatDate(session.sessionDate) },
+          { label: 'Scout',       value: assignedScoutName || '—' },
           { label: 'Crop',        value: session.crop ?? '—' },
           { label: 'Variety',     value: session.variety ?? '—' },
           { label: 'Observations',value: String(allObs.length) },
           { label: 'Pests',       value: String(pestObs) },
           { label: 'Diseases',    value: String(diseaseObs) },
           { label: 'Started',     value: session.startedAt ? formatDateTime(session.startedAt) : '—' },
-          { label: 'Submitted',   value: session.submittedAt ? formatDateTime(session.submittedAt) : '—' },
           { label: 'Completed',   value: session.completedAt ? formatDateTime(session.completedAt) : '—' },
         ].map(({ label, value }) => (
           <div key={label} className="card" style={{ padding: '12px 14px' }}>
@@ -741,7 +774,9 @@ export default function SessionDetailPage() {
       {/* Sections / Observations */}
       {session.sections.map(section => {
         const sectionObs = section.observations.filter(o => !o.deleted)
-        const isEditable = isAssignedScout && ['IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
+        const canEditObservations = isAssignedScout && ['IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
+        const canEditObservationNotes =
+          isAssignedScout && ['IN_PROGRESS', 'REOPENED', 'INCOMPLETE', 'SUBMITTED', 'COMPLETED'].includes(session.status)
         return (
           <div key={section.targetId} className="card" style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -781,7 +816,8 @@ export default function SessionDetailPage() {
               }}
               section={section}
               sessionId={sessionId!}
-              isEditable={isEditable}
+              isEditable={canEditObservations}
+              canEditNotes={canEditObservationNotes}
               farmId={session.farmId}
               surveySpeciesCodes={session.surveySpeciesCodes}
               customSurveySpeciesIds={session.customSurveySpeciesIds}

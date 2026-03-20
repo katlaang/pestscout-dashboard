@@ -162,20 +162,20 @@ function FarmsTab() {
   async function handleAddMember() {
     if (!selectedFarm) return
     if (!selectedMemberId) {
-      flash('Choose an existing person to attach to this farm.', true)
+      flash('Choose an existing person to assign to this farm.', true)
       return
     }
 
     setMemberSaving(true)
     try {
-      await adminFarmsApi.addMember(selectedFarm.id, selectedMemberId)
+      await adminUsersApi.update(selectedMemberId, { farmId: selectedFarm.id })
       const updatedMembers = await adminFarmsApi.listMembers(selectedFarm.id)
       setMembers(updatedMembers)
       setSelectedMemberId('')
       setMemberSearch('')
-      flash('Farm member attached')
+      flash('User assigned to farm')
     } catch (e: any) {
-      flash(e?.response?.data?.message ?? 'Failed to attach farm member', true)
+      flash(e?.response?.data?.message ?? 'Failed to assign user to farm', true)
     } finally {
       setMemberSaving(false)
     }
@@ -520,7 +520,7 @@ function FarmsTab() {
                     Add existing person
                   </div>
                   <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 10 }}>
-                    Attach an existing user to this farm without changing their current role. Their role stays the same on every farm they belong to.
+                    Assign an existing user to this farm without changing their current role. If they already belong to another farm, they will be moved here.
                   </div>
                   <input
                     className="input"
@@ -570,7 +570,7 @@ function FarmsTab() {
                               {[user.firstName, user.lastName].filter(Boolean).join(' ') || user.email}
                             </div>
                             <div style={{ fontSize: 11, color: '#6b7280' }}>
-                              {user.email} · {String(user.role).replace(/_/g, ' ')}
+                              {user.email} · {String(user.role).replace(/_/g, ' ')} · {user.farmId ? `Currently ${farms.find(farm => farm.id === user.farmId)?.name ?? 'assigned elsewhere'}` : 'Unassigned'}
                             </div>
                           </div>
                         </label>
@@ -579,7 +579,7 @@ function FarmsTab() {
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
                     <button className="btn-primary" style={{ fontSize: 12 }} onClick={handleAddMember} disabled={memberSaving}>
-                      {memberSaving ? 'Adding...' : 'Add to farm'}
+                      {memberSaving ? 'Assigning...' : 'Assign to farm'}
                     </button>
                   </div>
                 </div>
@@ -587,7 +587,7 @@ function FarmsTab() {
                   <p style={{ fontSize: 12, color: '#9ca3af', padding: '8px 0' }}>Loading…</p>
                 ) : members.length === 0 ? (
                   <p style={{ fontSize: 12, color: '#9ca3af', padding: '8px 0' }}>
-                    No members yet. Use the add-existing-person section above or create users via the Users tab.
+                    No members yet. Use the assign-person section above or create users via the Users tab.
                   </p>
                 ) : (
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 4 }}>
