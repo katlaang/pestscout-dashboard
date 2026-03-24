@@ -7,6 +7,7 @@ import {
   useState,
   type ChangeEvent,
   type CSSProperties,
+  type RefObject,
 } from 'react'
 import CustomSpeciesModal from '@/components/scouting/CustomSpeciesModal'
 import { adminFarmsApi, customSpeciesApi, observationsApi, scoutingPhotosApi, sessionsApi } from '@/services/api'
@@ -460,12 +461,15 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
   const [activeCell, setActiveCell] = useState<ActiveCellState | null>(null)
   const [showCellModal, setShowCellModal] = useState(false)
   const [activeRemarkRow, setActiveRemarkRow] = useState<ActiveRemarkRowState | null>(null)
+  const [isGridExpanded, setIsGridExpanded] = useState(false)
+  const [pendingFocusCellKey, setPendingFocusCellKey] = useState<string | null>(null)
 
   const saveTimerRef = useRef<number | null>(null)
   const activeCellRef = useRef<ActiveCellState | null>(null)
   const activeRemarkRowRef = useRef<ActiveRemarkRowState | null>(null)
   const pendingPhotoMapRef = useRef<PendingCellPhotoMap>({})
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const cellInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const canEditNotes = canEditNotesProp ?? isEditable
 
   useEffect(() => {
@@ -546,7 +550,33 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     setActiveCell(null)
     setShowCellModal(false)
     setActiveRemarkRow(null)
+    setIsGridExpanded(false)
+    setPendingFocusCellKey(null)
   }, [section.targetId])
+
+  useEffect(() => {
+    if (!isGridExpanded || !pendingFocusCellKey) return
+
+    const frame = window.requestAnimationFrame(() => {
+      const target = cellInputRefs.current[pendingFocusCellKey]
+      target?.focus()
+      target?.select()
+      setPendingFocusCellKey(null)
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [isGridExpanded, pendingFocusCellKey])
+
+  useEffect(() => {
+    if (!isGridExpanded) return
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [isGridExpanded])
 
   useEffect(() => {
     return () => {
@@ -795,6 +825,12 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
   function isRemarkRowDirty(row: ActiveRemarkRowState | null) {
     if (!row) return false
     return limitWords(row.draftNotes, MAX_REMARK_WORDS).trim() !== row.originalNotes.trim()
+  }
+
+  function openExpandedGridForCell(meta: GridCellMeta, cellKey: string) {
+    setIsGridExpanded(true)
+    setPendingFocusCellKey(cellKey)
+    openCellEditor(meta)
   }
 
   async function saveActiveCellDraft(force = false) {
@@ -1093,6 +1129,11 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     setShowCellModal(false)
   }
 
+  async function handleExpandedGridClose() {
+    await flushPendingChanges()
+    setIsGridExpanded(false)
+  }
+
   function removePendingPhoto(cellKey: string, tempId: string) {
     setPendingPhotosForKey(cellKey, previous => {
       const target = previous.find(item => item.tempId === tempId)
@@ -1298,8 +1339,53 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     )
   }
 
+  const gridShellStyle: CSSProperties = isGridExpanded
+    ? {
+        position: 'fixed',
+        inset: 0,
+        zIndex: 70,
+        background: '#f9fafb',
+        padding: '20px 24px 32px',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'auto',
+      }
+    : {}
+
+  const gridTableContainerStyle: CSSProperties = isGridExpanded
+    ? {
+        flex: 1,
+        overflow: 'auto',
+        paddingBottom: 12,
+        background: '#ffffff',
+        border: '0.5px solid #e5e7eb',
+        borderRadius: 14,
+        boxShadow: '0 24px 60px rgba(17, 24, 39, 0.08)',
+      }
+    : {
+        overflowX: 'auto',
+        paddingBottom: 6,
+      }
+
   return (
     <>
+      <div style={gridShellStyle}>
+      {isGridExpanded && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
+          <div>
+            <h3 style={{ margin: 0, color: '#111827', fontSize: 20 }}>
+              {section.targetName || (section.greenhouseId ? 'Greenhouse observations' : 'Field block observations')}
+            </h3>
+            <p style={{ margin: '6px 0 0', fontSize: 12, color: '#6b7280' }}>
+              Full-page entry mode. Tap any value cell to enter or update counts.
+            </p>
+          </div>
+          <button type="button" className="btn-secondary" onClick={() => void handleExpandedGridClose()}>
+            Done
+          </button>
+        </div>
+      )}
+
       {isEditable && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
           {(['PEST', 'BENEFICIAL', 'DISEASE'] as ObservationCategory[]).map(category => (
@@ -1313,10 +1399,20 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
               {OTHER_ACTION_LABEL[category]}
             </button>
           ))}
+          {!isGridExpanded && rows.length > 0 && (
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ fontSize: 11, padding: '5px 10px' }}
+              onClick={() => setIsGridExpanded(true)}
+            >
+              Open full-page entry
+            </button>
+          )}
         </div>
       )}
 
-      <div style={{ overflowX: 'auto', paddingBottom: 6 }}>
+      <div style={gridTableContainerStyle}>
         <table style={{ borderCollapse: 'collapse', fontSize: 11, tableLayout: 'auto', width: 'max-content', minWidth: '100%' }}>
           <thead>
             <tr>
@@ -1442,12 +1538,25 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
                         >
                           {isEditable ? (
                             <input
+                              ref={node => {
+                                cellInputRefs.current[key] = node
+                              }}
                               type="text"
                               inputMode="numeric"
                               pattern="[0-9]*"
                               className="input"
                               value={displayValue}
+                              onMouseDown={event => {
+                                if (!isGridExpanded) {
+                                  event.preventDefault()
+                                  openExpandedGridForCell(meta, key)
+                                }
+                              }}
                               onFocus={() => {
+                                if (!isGridExpanded) {
+                                  openExpandedGridForCell(meta, key)
+                                  return
+                                }
                                 const current = activeCellRef.current
                                 if (current && current.observationKey !== key && current.dirty && current.draftCount.trim() !== '') {
                                   void saveActiveCellDraft(true)
@@ -1588,6 +1697,7 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
             No Bay/Bed layout was returned for this target yet. Once the target structure is available, you can enter observations here on web, tablet, or mobile.
           </p>
         )}
+      </div>
       </div>
 
       <CustomSpeciesModal
