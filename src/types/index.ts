@@ -162,10 +162,14 @@ export interface ScoutingSessionDetailDto {
   id: string
   version: number
   farmId: string
+  farmName?: string
   sessionDate: string
   weekNumber: number
+  weekYear?: number
+  weekKey?: string
   status: SessionStatus
   syncStatus: SyncStatus
+  openRestricted?: boolean
   managerId?: string
   scoutId?: string | null
   crop?: string
@@ -173,11 +177,13 @@ export interface ScoutingSessionDetailDto {
   temperatureCelsius?: number
   relativeHumidityPercent?: number
   observationTime?: string
+  observationTimezone?: string
   weatherNotes?: string
   notes?: string
   surveySpeciesCodes?: SpeciesCode[]
   customSurveySpeciesIds?: string[]
   defaultPhotoSourceType?: string
+  remoteStartConsentRequired?: boolean
   startedAt?: string
   submittedAt?: string
   completedAt?: string
@@ -276,6 +282,9 @@ export interface TrendPointDto {
 
 export interface WeeklyPestTrendDto {
   week: string
+  weekKey?: string
+  weekNumber?: number
+  year?: number
   thrips: number
   redSpider: number
   whiteflies: number
@@ -287,6 +296,9 @@ export interface WeeklyPestTrendDto {
 
 export interface SeverityTrendPointDto {
   week: string
+  weekKey?: string
+  weekNumber?: number
+  year?: number
   zero: number
   low: number
   medium: number
@@ -295,6 +307,8 @@ export interface SeverityTrendPointDto {
 }
 
 export interface AlertDto {
+  farmId?: string
+  farmName?: string
   location: string
   pest: string
   severity: string
@@ -314,9 +328,33 @@ export interface RecommendationDto {
 export interface PestDistributionItemDto {
   name: string
   value: number
+  count?: number
   percentage: number
   severity: string
 }
+
+export interface GreenhouseWeeklyTrendPointDto {
+  greenhouseId?: string
+  greenhouseName?: string
+  week?: string
+  weekKey?: string
+  weekNumber?: number
+  year?: number
+  count?: number
+  value?: number
+}
+
+export interface GreenhouseWeeklyTrendSeriesDto {
+  greenhouseId?: string
+  greenhouseName?: string
+  points?: GreenhouseWeeklyTrendPointDto[]
+  weeklyCounts?: GreenhouseWeeklyTrendPointDto[]
+  values?: GreenhouseWeeklyTrendPointDto[]
+}
+
+export type GreenhouseWeeklyTrendResponse =
+  | GreenhouseWeeklyTrendPointDto[]
+  | GreenhouseWeeklyTrendSeriesDto[]
 
 export interface DashboardDto {
   summary: DashboardSummaryDto
@@ -471,6 +509,37 @@ export interface CreateFarmRequest {
   greenhouses?: FarmGreenhouseDraftRequest[]
 }
 
+export interface FarmLayoutPreviewRequest {
+  latitude: string
+  longitude: string
+  greenhouseCount: number
+  greenhouseNames: string[]
+}
+
+export interface FarmLayoutPreviewPoint {
+  x?: number | string | null
+  y?: number | string | null
+  lat?: number | string | null
+  lng?: number | string | null
+  latitude?: number | string | null
+  longitude?: number | string | null
+}
+
+export interface FarmLayoutPreviewPolygon {
+  id?: string
+  name?: string
+  label?: string
+  greenhouseName?: string
+  targetName?: string
+  points?: FarmLayoutPreviewPoint[]
+  polygon?: FarmLayoutPreviewPoint[]
+  coordinates?: FarmLayoutPreviewPoint[]
+}
+
+export interface FarmLayoutPreviewResponse {
+  polygons?: FarmLayoutPreviewPolygon[]
+}
+
 export interface GreenhouseBayRequest {
   bayTag: string
   bedCount: number
@@ -521,6 +590,29 @@ export interface GreenhouseResponse {
   active: boolean
   createdAt: string
   updatedAt: string
+}
+
+export interface DashboardOverviewFarmDto {
+  farmId: string
+  farmTag: string
+  farmName: string
+  licenseExpiryDate?: string | null
+  daysUntilLicenseExpiry?: number | null
+  accessLocked: boolean
+}
+
+export interface LicenseAlertDto {
+  farmId: string
+  farmName: string
+  licenseExpiryDate?: string | null
+  daysUntilExpiry?: number | null
+  status: string
+}
+
+export interface DashboardOverviewDto {
+  farmCount: number
+  farms: DashboardOverviewFarmDto[]
+  licenseAlerts: LicenseAlertDto[]
 }
 
 export interface CreateGreenhouseRequest {
@@ -694,13 +786,13 @@ export interface ScoutingPhotoDto {
   id: string
   sessionId: string
   observationId?: string | null
-  sessionTargetId: string
+  sessionTargetId?: string | null
   farmId: string
-  bayIndex: number
+  bayIndex?: number | null
   bayTag?: string | null
-  benchIndex: number
+  benchIndex?: number | null
   benchTag?: string | null
-  spotIndex: number
+  spotIndex?: number | null
   localPhotoId: string
   purpose?: string | null
   objectKey?: string | null
@@ -712,15 +804,16 @@ export interface ScoutingPhotoDto {
 
 export interface RegisterScoutingPhotoRequest {
   sessionId: string
-  sessionTargetId: string
-  bayIndex: number
+  observationId?: string
+  sessionTargetId?: string
+  bayIndex?: number
   bayTag?: string
-  benchIndex: number
+  benchIndex?: number
   benchTag?: string
-  spotIndex: number
+  spotIndex?: number
   localPhotoId: string
   purpose?: string
-  sourceType: string
+  sourceType?: string
   capturedAt?: string
 }
 

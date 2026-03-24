@@ -9,7 +9,7 @@ import {
   type CSSProperties,
 } from 'react'
 import CustomSpeciesModal from '@/components/scouting/CustomSpeciesModal'
-import { adminFarmsApi, customSpeciesApi, observationsApi, scoutingPhotosApi } from '@/services/api'
+import { adminFarmsApi, customSpeciesApi, observationsApi, scoutingPhotosApi, sessionsApi } from '@/services/api'
 import type {
   ConfirmScoutingPhotoRequest,
   CreateObservationRequest,
@@ -20,11 +20,19 @@ import type {
   RegisterScoutingPhotoResponse,
   ScoutingObservationDto,
   ScoutingPhotoDto,
+  ScoutingSessionDetailDto,
   ScoutingSessionSectionDto,
   SpeciesCode,
   UpdateObservationRequest,
 } from '@/types'
 import { mergeCustomSpecies } from '@/utils/customSpecies'
+import {
+  buildRowRemarkKey,
+  buildSessionNotesValue,
+  countWords,
+  limitWords,
+  parseSessionNotesValue,
+} from '@/utils/sessionNotes'
 
 type BuiltInGridColumn = {
   kind: 'built_in'
@@ -68,6 +76,7 @@ const OTHER_ACTION_LABEL: Record<ObservationCategory, string> = {
 
 const SPOT_INDEX = 1
 const MAX_CELL_PHOTOS = 5
+const MAX_REMARK_WORDS = 700
 
 function countColor(n: number | null, category: ObservationCategory): { bg: string; fg: string } {
   if (n === null) return { bg: '#ffffff', fg: '#111827' }
@@ -109,8 +118,8 @@ function parseCountValue(value: string): number | null {
   return parsed
 }
 
-function rowKey(bayIndex: number, benchIndex: number) {
-  return `${bayIndex}:${benchIndex}`
+function supportsObservationPhotos(column: GridColumn) {
+  return column.kind === 'custom'
 }
 
 interface GridRow {
@@ -320,10 +329,25 @@ interface ActiveCellState {
   saveError: string | null
 }
 
+interface ActiveRemarkRowState {
+  key: string
+  bayIndex: number
+  bayTag: string
+  benchIndex: number
+  benchTag: string
+  originalNotes: string
+  draftNotes: string
+  saving: boolean
+  error: string | null
+}
+
 function toPhotoMap(photos: ScoutingPhotoDto[]): CellPhotoMap {
   const next: CellPhotoMap = {}
 
   photos.forEach(photo => {
+    if (!photo.sessionTargetId || photo.bayIndex == null || photo.benchIndex == null) {
+      return
+    }
     const key = photoCellKey(photo.sessionTargetId, photo.bayIndex, photo.benchIndex, photo.spotIndex || SPOT_INDEX)
     next[key] = next[key] ? [...next[key], photo] : [photo]
   })
@@ -393,11 +417,15 @@ async function uploadRegisteredPhoto(file: File, registered: RegisterScoutingPho
 interface ObservationGridProps {
   section: ScoutingSessionSectionDto
   sessionId: string
+  sessionVersion: number
+  sessionNotes?: string
+  actorName: string
   isEditable: boolean
   canEditNotes?: boolean
   farmId: string
   surveySpeciesCodes?: SpeciesCode[]
   customSurveySpeciesIds?: string[]
+  onSessionUpdated?: (session: ScoutingSessionDetailDto) => void
 }
 
 export interface ObservationGridHandle {
@@ -407,11 +435,15 @@ export interface ObservationGridHandle {
 const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(function ObservationGrid({
   section,
   sessionId,
+  sessionVersion,
+  sessionNotes,
+  actorName,
   isEditable,
   canEditNotes: canEditNotesProp,
   farmId,
   surveySpeciesCodes,
   customSurveySpeciesIds,
+  onSessionUpdated,
 }, ref) {
   const [obsMap, setObsMap] = useState<Record<string, ScoutingObservationDto>>({})
   const [greenhouse, setGreenhouse] = useState<GreenhouseResponse | null>(null)
@@ -426,9 +458,12 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
   const [photoMap, setPhotoMap] = useState<CellPhotoMap>({})
   const [pendingPhotoMap, setPendingPhotoMap] = useState<PendingCellPhotoMap>({})
   const [activeCell, setActiveCell] = useState<ActiveCellState | null>(null)
+  const [showCellModal, setShowCellModal] = useState(false)
+  const [activeRemarkRow, setActiveRemarkRow] = useState<ActiveRemarkRowState | null>(null)
 
   const saveTimerRef = useRef<number | null>(null)
   const activeCellRef = useRef<ActiveCellState | null>(null)
+  const activeRemarkRowRef = useRef<ActiveRemarkRowState | null>(null)
   const pendingPhotoMapRef = useRef<PendingCellPhotoMap>({})
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const canEditNotes = canEditNotesProp ?? isEditable
@@ -436,6 +471,10 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
   useEffect(() => {
     activeCellRef.current = activeCell
   }, [activeCell])
+
+  useEffect(() => {
+    activeRemarkRowRef.current = activeRemarkRow
+  }, [activeRemarkRow])
 
   useEffect(() => {
     pendingPhotoMapRef.current = pendingPhotoMap
@@ -505,6 +544,8 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
 
   useEffect(() => {
     setActiveCell(null)
+    setShowCellModal(false)
+    setActiveRemarkRow(null)
   }, [section.targetId])
 
   useEffect(() => {
@@ -618,6 +659,7 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
   const diseaseCount = visibleColumns.filter(column => column.category === 'DISEASE').length
 
   const rows = useMemo(() => buildRows(section, greenhouse, fieldBlock), [section, greenhouse, fieldBlock])
+  const parsedSessionNotes = useMemo(() => parseSessionNotesValue(sessionNotes), [sessionNotes])
 
   const rowRemarksByKey = useMemo(() => {
     const remarks: Record<string, string> = {}
@@ -626,7 +668,7 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
       const note = observation.notes?.trim()
       if (!note) return
 
-      const key = rowKey(observation.bayIndex, observation.benchIndex)
+      const key = buildRowRemarkKey(section.targetId, observation.bayIndex, observation.benchIndex)
       if (!remarks[key]) {
         remarks[key] = note
         return
@@ -642,8 +684,25 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
       }
     })
 
+    Object.entries(parsedSessionNotes.metadata.rowRemarks).forEach(([key, remark]) => {
+      if (remark.trim()) {
+        remarks[key] = remark
+      }
+    })
+
     return remarks
-  }, [obsMap])
+  }, [obsMap, parsedSessionNotes.metadata.rowRemarks, section.targetId])
+
+  const rowObservationsByKey = useMemo(() => {
+    const grouped: Record<string, ScoutingObservationDto[]> = {}
+
+    Object.values(obsMap).forEach(observation => {
+      const key = buildRowRemarkKey(section.targetId, observation.bayIndex, observation.benchIndex)
+      grouped[key] = grouped[key] ? [...grouped[key], observation] : [observation]
+    })
+
+    return grouped
+  }, [obsMap, section.targetId])
 
   const cellMetaByKey = useMemo(() => {
     const map = new Map<string, GridCellMeta>()
@@ -687,11 +746,13 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     setModalCategory(null)
   }
 
-  function openCellEditor(meta: GridCellMeta) {
-    const observationKey = obsKey(meta.bayIndex, meta.benchIndex, meta.col.key)
-    const committedObservation = obsMap[observationKey] ?? null
-    setActiveCell({
-      observationKey,
+  function buildActiveCellState(
+    meta: GridCellMeta,
+    committedObservation: ScoutingObservationDto | null,
+    overrides?: Partial<ActiveCellState>,
+  ): ActiveCellState {
+    return {
+      observationKey: obsKey(meta.bayIndex, meta.benchIndex, meta.col.key),
       photoKey: photoCellKey(section.targetId, meta.bayIndex, meta.benchIndex, SPOT_INDEX),
       bayIndex: meta.bayIndex,
       bayTag: meta.bayTag,
@@ -705,7 +766,35 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
       saving: false,
       clearLoading: false,
       saveError: null,
+      ...overrides,
+    }
+  }
+
+  function openCellEditor(meta: GridCellMeta, overrides?: Partial<ActiveCellState>) {
+    const observationKey = obsKey(meta.bayIndex, meta.benchIndex, meta.col.key)
+    const committedObservation = obsMap[observationKey] ?? null
+    setActiveCell(buildActiveCellState(meta, committedObservation, overrides))
+  }
+
+  function openRemarkEditor(row: GridRow) {
+    const key = buildRowRemarkKey(section.targetId, row.bayIndex, row.benchIndex)
+    const originalNotes = rowRemarksByKey[key] ?? ''
+    setActiveRemarkRow({
+      key,
+      bayIndex: row.bayIndex,
+      bayTag: row.bayTag,
+      benchIndex: row.benchIndex,
+      benchTag: row.benchTag,
+      originalNotes,
+      draftNotes: originalNotes,
+      saving: false,
+      error: null,
     })
+  }
+
+  function isRemarkRowDirty(row: ActiveRemarkRowState | null) {
+    if (!row) return false
+    return limitWords(row.draftNotes, MAX_REMARK_WORDS).trim() !== row.originalNotes.trim()
   }
 
   async function saveActiveCellDraft(force = false) {
@@ -805,6 +894,72 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     }
   }
 
+  async function saveActiveRemarkRow(force = false) {
+    const current = activeRemarkRowRef.current
+    if (!current || current.saving) return
+    const trimmedNotes = limitWords(current.draftNotes, MAX_REMARK_WORDS).trim()
+    const hasChanges = trimmedNotes !== current.originalNotes.trim()
+
+    if (!hasChanges && !force) {
+      return
+    }
+
+    if (!hasChanges) {
+      setActiveRemarkRow(null)
+      return
+    }
+
+    setActiveRemarkRow(previous => previous && previous.key === current.key
+      ? { ...previous, saving: true, error: null }
+      : previous)
+
+    try {
+      const nextRowRemarks = { ...parsedSessionNotes.metadata.rowRemarks }
+      if (trimmedNotes) {
+        nextRowRemarks[current.key] = trimmedNotes
+      } else {
+        delete nextRowRemarks[current.key]
+      }
+
+      const updatedSession = await sessionsApi.update(sessionId, {
+        notes: buildSessionNotesValue(parsedSessionNotes.plainNotes, {
+          ...parsedSessionNotes.metadata,
+          rowRemarks: nextRowRemarks,
+        }),
+        version: sessionVersion,
+        actorName,
+      })
+
+      onSessionUpdated?.(updatedSession)
+      setActiveRemarkRow(null)
+    } catch (error: any) {
+      setActiveRemarkRow(previous => previous && previous.key === current.key
+        ? {
+            ...previous,
+            saving: false,
+            error: error?.response?.data?.message ?? 'Could not save row remarks yet.',
+          }
+        : previous)
+      throw error
+    }
+  }
+
+  async function handleRemarkModalClose() {
+    const current = activeRemarkRowRef.current
+    if (!current) return
+
+    if (isRemarkRowDirty(current)) {
+      try {
+        await saveActiveRemarkRow()
+      } catch {
+        return
+      }
+      return
+    }
+
+    setActiveRemarkRow(null)
+  }
+
   async function clearActiveCell() {
     const current = activeCellRef.current
     if (!current) return
@@ -855,7 +1010,20 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
   }
 
   async function flushPendingChanges() {
-    await saveActiveCellDraft(true)
+    const currentCell = activeCellRef.current
+    if (currentCell?.dirty) {
+      if (currentCell.draftCount.trim() === '') {
+        if (currentCell.committedObservation) {
+          await clearActiveCell()
+        }
+      } else {
+        await saveActiveCellDraft(true)
+      }
+    }
+
+    if (isRemarkRowDirty(activeRemarkRowRef.current)) {
+      await saveActiveRemarkRow()
+    }
   }
 
   useImperativeHandle(ref, () => ({
@@ -898,21 +1066,31 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     whiteSpace: 'nowrap',
   }
 
+  const activeCellSupportsPhotos = !!activeCell && supportsObservationPhotos(activeCell.col)
   const currentCellPhotos = activeCell ? photoMap[activeCell.photoKey] ?? [] : []
   const currentPendingPhotos = activeCell ? pendingPhotoMap[activeCell.photoKey] ?? [] : []
   const currentPhotoCount = currentCellPhotos.length + currentPendingPhotos.length
   const canEditCurrentCellNotes = !!activeCell && canEditNotes && (isEditable || !!activeCell.committedObservation)
   const canSaveCurrentCell = !!activeCell && (isEditable ? activeCell.draftCount.trim() !== '' : !!activeCell.committedObservation)
+  const activeCellRemarkWordCount = countWords(activeCell?.draftNotes ?? '')
+  const activeRemarkRowWordCount = countWords(activeRemarkRow?.draftNotes ?? '')
 
   async function handleModalClose() {
-    if (activeCell?.dirty && activeCell.draftCount.trim() !== '') {
-      try {
-        await saveActiveCellDraft(true)
-      } catch {
-        return
+    const current = activeCellRef.current
+    if (current?.dirty) {
+      if (current.draftCount.trim() === '') {
+        if (current.committedObservation) {
+          await clearActiveCell()
+        }
+      } else {
+        try {
+          await saveActiveCellDraft(true)
+        } catch {
+          return
+        }
       }
     }
-    setActiveCell(null)
+    setShowCellModal(false)
   }
 
   function removePendingPhoto(cellKey: string, tempId: string) {
@@ -993,6 +1171,9 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
   }
 
   async function handleDeletePhoto(photo: ScoutingPhotoDto) {
+    if (!photo.sessionTargetId || photo.bayIndex == null || photo.benchIndex == null) {
+      return
+    }
     const key = photoCellKey(photo.sessionTargetId, photo.bayIndex, photo.benchIndex, photo.spotIndex || SPOT_INDEX)
     try {
       await scoutingPhotosApi.delete(sessionId, photo.id)
@@ -1157,7 +1338,10 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
                   Disease
                 </th>
               )}
-              <th style={{ ...thBase, background: '#f9fafb', color: '#374151', textAlign: 'center', minWidth: 180 }}>
+              <th
+                rowSpan={2}
+                style={{ ...thBase, background: '#f9fafb', color: '#374151', textAlign: 'center', minWidth: 180 }}
+              >
                 Remarks
               </th>
             </tr>
@@ -1192,15 +1376,14 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
                   </div>
                 </th>
               ))}
-              <th style={{ ...thBase, background: '#f3f4f6', color: '#374151', minWidth: 180, textAlign: 'center' }}>
-                Remarks
-              </th>
             </tr>
           </thead>
 
           <tbody>
             {rows.map(row => {
               const rowId = `${row.bayIndex}-${row.benchIndex}`
+              const currentRowKey = buildRowRemarkKey(section.targetId, row.bayIndex, row.benchIndex)
+              const currentRowRemarks = rowRemarksByKey[currentRowKey] ?? ''
               return (
                 <tr key={rowId} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
                   {row.rowSpan !== undefined && (
@@ -1237,73 +1420,162 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
                       : ''
                     const displayCount = parseCountValue(displayValue)
                     const { bg, fg } = countColor(displayCount, col.category)
+                    const showPhotoCount = supportsObservationPhotos(col)
                     const cellPhotoKey = photoCellKey(section.targetId, row.bayIndex, row.benchIndex, SPOT_INDEX)
-                    const totalPhotos = (photoMap[cellPhotoKey] ?? []).length + (pendingPhotoMap[cellPhotoKey] ?? []).length
+                    const totalPhotos = showPhotoCount
+                      ? (photoMap[cellPhotoKey] ?? []).length + (pendingPhotoMap[cellPhotoKey] ?? []).length
+                      : 0
+                    const showPhotoButton = showPhotoCount && (isEditable || totalPhotos > 0)
 
                     return (
                       <td key={col.key} style={{ background: bg, padding: 0, minWidth: columnMinWidth(col) }}>
-                        <button
-                          type="button"
-                          onClick={() => openCellEditor(meta)}
+                        <div
                           style={{
                             width: '100%',
                             minHeight: 42,
-                            border: 'none',
-                            background: 'transparent',
                             display: 'flex',
                             flexDirection: 'column',
-                            alignItems: 'stretch',
                             justifyContent: 'center',
-                            padding: '2px 4px',
-                            cursor: 'pointer',
+                            gap: 4,
+                            padding: '3px 4px',
                           }}
                         >
-                          <span
-                            style={{
-                              textAlign: 'center',
-                              color: fg,
-                              fontSize: 11,
-                              fontFamily: 'DM Mono, monospace',
-                              fontWeight: displayCount !== null && displayCount > 0 ? 600 : 400,
-                              lineHeight: 1.2,
-                              minHeight: 14,
-                            }}
-                          >
-                            {displayValue}
-                          </span>
-                          <span
-                            style={{
-                              marginTop: 4,
-                              display: 'flex',
-                              justifyContent: 'center',
-                              alignItems: 'center',
-                              gap: 4,
-                              fontSize: 9,
-                              color: fg,
-                              opacity: displayCount === null ? 0.85 : 1,
-                              lineHeight: 1,
-                            }}
-                          >
-                            <span aria-hidden="true">📷</span>
-                            <span>{totalPhotos}/{MAX_CELL_PHOTOS}</span>
-                          </span>
-                        </button>
+                          {isEditable ? (
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              className="input"
+                              value={displayValue}
+                              onFocus={() => {
+                                const current = activeCellRef.current
+                                if (current && current.observationKey !== key && current.dirty && current.draftCount.trim() !== '') {
+                                  void saveActiveCellDraft(true)
+                                }
+                                if (!isActiveCell) {
+                                  openCellEditor(meta)
+                                }
+                              }}
+                              onChange={event => {
+                                const nextValue = event.target.value
+                                if (nextValue !== '' && !/^\d+$/.test(nextValue)) return
+
+                                setActiveCell(previous => {
+                                  if (!previous || previous.observationKey !== key) {
+                                    return buildActiveCellState(meta, savedObservation ?? null, {
+                                      draftCount: nextValue,
+                                      dirty: true,
+                                      saveError: null,
+                                    })
+                                  }
+
+                                  return {
+                                    ...previous,
+                                    draftCount: nextValue,
+                                    dirty: true,
+                                    saveError: null,
+                                  }
+                                })
+                              }}
+                              onBlur={() => {
+                                const current = activeCellRef.current
+                                if (!current || current.observationKey !== key) return
+
+                                if (current.draftCount.trim() === '') {
+                                  if (current.committedObservation) {
+                                    void clearActiveCell()
+                                  }
+                                  return
+                                }
+
+                                void saveActiveCellDraft(true)
+                              }}
+                              placeholder=""
+                              style={{
+                                width: '100%',
+                                minWidth: 0,
+                                textAlign: 'center',
+                                padding: '4px 3px',
+                                minHeight: 28,
+                                borderRadius: 4,
+                                border: isActiveCell && activeCell?.saveError ? '0.5px solid #fca5a5' : 'none',
+                                background: 'transparent',
+                                color: fg,
+                                fontSize: 11,
+                                fontFamily: 'DM Mono, monospace',
+                                fontWeight: displayCount !== null && displayCount > 0 ? 600 : 400,
+                                outline: 'none',
+                                boxShadow: 'none',
+                              }}
+                            />
+                          ) : (
+                            <div
+                              style={{
+                                textAlign: 'center',
+                                color: fg,
+                                fontSize: 11,
+                                fontFamily: 'DM Mono, monospace',
+                                fontWeight: displayCount !== null && displayCount > 0 ? 600 : 400,
+                                lineHeight: 1.2,
+                                minHeight: 24,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                              }}
+                            >
+                              {displayValue}
+                            </div>
+                          )}
+                          {showPhotoButton && (
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              style={{ fontSize: 9, padding: '3px 6px' }}
+                              onClick={event => {
+                                event.stopPropagation()
+                                const current = activeCellRef.current
+                                if (current && current.observationKey !== key && current.dirty && current.draftCount.trim() !== '') {
+                                  void saveActiveCellDraft(true)
+                                }
+                                if (!isActiveCell) {
+                                  openCellEditor(meta)
+                                }
+                                setShowCellModal(true)
+                              }}
+                            >
+                              {totalPhotos}/{MAX_CELL_PHOTOS} photos
+                            </button>
+                          )}
+                        </div>
                       </td>
                     )
                   })}
 
                   <td
+                    onClick={() => {
+                      if (canEditNotes) {
+                        openRemarkEditor(row)
+                      }
+                    }}
                     style={{
                       ...tdBase,
                       minWidth: 180,
                       maxWidth: 240,
                       whiteSpace: 'normal',
-                      color: '#6b7280',
-                      background: '#ffffff',
+                      color: currentRowRemarks ? '#374151' : '#6b7280',
+                      background: canEditNotes ? '#fcfcfc' : '#ffffff',
                       verticalAlign: 'top',
+                      cursor: canEditNotes ? 'pointer' : 'default',
                     }}
                   >
-                    {rowRemarksByKey[rowKey(row.bayIndex, row.benchIndex)] ?? ''}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <span>{currentRowRemarks || (canEditNotes ? 'Add remarks' : '')}</span>
+                      {canEditNotes && (
+                        <span style={{ fontSize: 10, color: '#9ca3af' }}>
+                          Click to edit
+                        </span>
+                      )}
+                    </div>
                   </td>
                 </tr>
               )
@@ -1327,7 +1599,7 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
         onCreated={handleCustomSpeciesCreated}
       />
 
-      {activeCell && (
+      {showCellModal && activeCell && (
         <div
           onClick={() => void handleModalClose()}
           style={{
@@ -1363,7 +1635,9 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
                   {activeCell.col.label} • {activeCell.bayTag} / {activeCell.benchTag}
                 </h3>
                 <p style={{ margin: '6px 0 0', fontSize: 12, color: '#6b7280' }}>
-                  Cell photos are attached to this Bay/Bed location. Use spot 1 for now.
+                  {activeCellSupportsPhotos
+                    ? 'Photos are available for custom other-observation cells only.'
+                    : 'Use hotspot photos in the session remarks panel and enter written remarks here for this standard observation.'}
                 </p>
               </div>
               <button type="button" className="btn-secondary" onClick={() => void handleModalClose()}>
@@ -1371,7 +1645,13 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
               </button>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) 1fr', gap: 16 }}>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: activeCellSupportsPhotos ? 'minmax(220px, 280px) 1fr' : 'minmax(220px, 280px)',
+                gap: 16,
+              }}
+            >
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <label style={{ fontSize: 12, color: '#374151', display: 'flex', flexDirection: 'column', gap: 6 }}>
                   Count
@@ -1403,16 +1683,17 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
                 </label>
 
                 <label style={{ fontSize: 12, color: '#374151', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  Notes
+                  Remarks
                   <textarea
                     className="input"
                     value={activeCell.draftNotes}
                     disabled={!canEditCurrentCellNotes}
                     rows={4}
                     onChange={event => {
+                      const nextValue = limitWords(event.target.value, MAX_REMARK_WORDS)
                       setActiveCell(previous => previous ? {
                         ...previous,
-                        draftNotes: event.target.value,
+                        draftNotes: nextValue,
                         dirty: true,
                         saveError: null,
                       } : previous)
@@ -1422,10 +1703,16 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
                         void saveActiveCellDraft(true)
                       }
                     }}
-                    placeholder="Optional notes for this cell"
+                    placeholder="Optional remarks for this cell"
                     style={{ resize: 'vertical' }}
                   />
                 </label>
+
+                {canEditCurrentCellNotes && (
+                  <div style={{ fontSize: 11, color: activeCellRemarkWordCount >= MAX_REMARK_WORDS ? '#d97706' : '#9ca3af' }}>
+                    {activeCellRemarkWordCount}/{MAX_REMARK_WORDS} words
+                  </div>
+                )}
 
                 {!isEditable && canEditNotes && !activeCell.committedObservation && (
                   <div style={{ fontSize: 12, color: '#9ca3af' }}>
@@ -1463,7 +1750,8 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
                 </div>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {activeCellSupportsPhotos && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>Photos</div>
@@ -1512,7 +1800,114 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
                     No photos attached to this cell yet.
                   </div>
                 )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeRemarkRow && (
+        <div
+          onClick={event => {
+            if (event.target === event.currentTarget && !activeRemarkRow.saving) {
+              void handleRemarkModalClose()
+            }
+          }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(17, 24, 39, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20,
+            zIndex: 81,
+          }}
+        >
+          <div
+            onClick={event => event.stopPropagation()}
+            style={{
+              width: 'min(520px, 100%)',
+              background: '#ffffff',
+              borderRadius: 14,
+              boxShadow: '0 24px 60px rgba(17, 24, 39, 0.2)',
+              border: '0.5px solid #e5e7eb',
+              padding: 20,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start' }}>
+              <div>
+                <h3 style={{ margin: 0, color: '#111827' }}>
+                  Remarks • {activeRemarkRow.bayTag} / {activeRemarkRow.benchTag}
+                </h3>
+                <p style={{ margin: '6px 0 0', fontSize: 12, color: '#6b7280' }}>
+                  Add remarks for this Bay/Bed row. Up to 700 words.
+                </p>
               </div>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={activeRemarkRow.saving}
+                aria-label="Close remarks dialog"
+                onClick={() => void handleRemarkModalClose()}
+                style={{ width: 36, height: 36, padding: 0, display: 'grid', placeItems: 'center', fontSize: 14, lineHeight: 1 }}
+              >
+                X
+              </button>
+            </div>
+
+            <label style={{ fontSize: 12, color: '#374151', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              Remarks
+              <textarea
+                className="input"
+                rows={5}
+                autoFocus
+                value={activeRemarkRow.draftNotes}
+                onChange={event => {
+                  const nextValue = limitWords(event.target.value, MAX_REMARK_WORDS)
+                  setActiveRemarkRow(previous => previous ? {
+                    ...previous,
+                    draftNotes: nextValue,
+                    error: null,
+                  } : previous)
+                }}
+                placeholder="Add remarks for this row"
+                style={{ resize: 'vertical' }}
+              />
+            </label>
+
+            <div style={{ fontSize: 11, color: activeRemarkRowWordCount >= MAX_REMARK_WORDS ? '#d97706' : '#9ca3af' }}>
+              {activeRemarkRowWordCount}/{MAX_REMARK_WORDS} words
+            </div>
+
+            {(rowObservationsByKey[activeRemarkRow.key] ?? []).length === 0 && (
+              <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                This row does not need a saved count anymore. Remarks save directly to the session.
+              </div>
+            )}
+
+            {activeRemarkRow.error && (
+              <div style={{ fontSize: 12, color: '#b91c1c' }}>
+                {activeRemarkRow.error}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button type="button" className="btn-secondary" disabled={activeRemarkRow.saving} onClick={() => void handleRemarkModalClose()}>
+                Close
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={activeRemarkRow.saving}
+                onClick={() => void saveActiveRemarkRow()}
+              >
+                {activeRemarkRow.saving ? 'Saving...' : 'Save remarks'}
+              </button>
             </div>
           </div>
         </div>

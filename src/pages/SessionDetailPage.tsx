@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { sessionsApi, adminUsersApi, adminFarmsApi } from '@/services/api'
 import ObservationGrid, { type ObservationGridHandle } from '@/components/scouting/ObservationGrid'
+import SessionRemarkPhotos, { type SessionRemarkPhotosHandle } from '@/components/scouting/SessionRemarkPhotos'
 import SessionPlannerFields, { type SessionPlannerTargetDraft } from '@/components/scouting/SessionPlannerFields'
 import ConfirmModal from '@/components/common/ConfirmModal'
 import type {
@@ -13,9 +14,17 @@ import type {
   SpeciesCode,
 } from '@/types'
 import {
-  SESSION_STATUS_BADGE, SPECIES_LABELS, formatDate, formatDateTime,
-  exportToCsv
+  SESSION_STATUS_BADGE,
+  SPECIES_LABELS,
+  exportToCsv,
+  formatDate,
+  formatDateTime,
+  formatLocalTimeInput,
+  formatSessionWeekLabel,
+  getDeviceTimeZone,
+  getDeviceTimeZoneOptions,
 } from '@/utils'
+import { buildSessionNotesValue, parseSessionNotesValue } from '@/utils/sessionNotes'
 import { useAuthStore } from '@/hooks/useAuth'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -40,6 +49,11 @@ export default function SessionDetailPage() {
   const [actionLoading, setActionLoading] = useState(false)
   const [error,         setError]         = useState<string | null>(null)
   const [banner,        setBanner]        = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
+  const [deviceDefaults] = useState(() => ({
+    observationTime: formatLocalTimeInput(),
+    observationTimezone: getDeviceTimeZone(),
+    timezoneOptions: getDeviceTimeZoneOptions(),
+  }))
 
   // Planner fields for draft/new sessions
   const [scouts,        setScouts]        = useState<UserDto[]>([])
@@ -58,6 +72,7 @@ export default function SessionDetailPage() {
   const [weatherTemp,   setWeatherTemp]   = useState('')
   const [weatherRh,     setWeatherRh]     = useState('')
   const [weatherTime,   setWeatherTime]   = useState('')
+  const [weatherTimezone, setWeatherTimezone] = useState('')
   const [weatherNotes,  setWeatherNotes]  = useState('')
   const [weatherSaving, setWeatherSaving] = useState(false)
   const [deleteLoading, setDeleteLoading] = useState(false)
@@ -65,16 +80,19 @@ export default function SessionDetailPage() {
 
   // Modals
   const [showCompleteWarn, setShowCompleteWarn] = useState(false)
+  const [showAcceptWarn,   setShowAcceptWarn]   = useState(false)
   const [showReopenModal,  setShowReopenModal]  = useState(false)
   const [showRemoteModal,  setShowRemoteModal]  = useState(false)
   const [showAuditTrail,   setShowAuditTrail]   = useState(false)
   const [showDeleteModal,  setShowDeleteModal]  = useState(false)
   const observationGridRefs = useRef<Record<string, ObservationGridHandle | null>>({})
+  const hotspotEditorRef = useRef<SessionRemarkPhotosHandle | null>(null)
 
   const role      = user?.role ?? ''
   const isScout   = role === 'SCOUT'
   const isManager = ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'].includes(role)
   const myName    = actorLabel(user)
+  const parsedSessionNotes = useMemo(() => parseSessionNotesValue(session?.notes), [session?.notes])
 
   useEffect(() => {
     if (!sessionId) return
@@ -92,7 +110,7 @@ export default function SessionDetailPage() {
     setDraftWeek(session.weekNumber)
     setDraftCrop(session.crop ?? '')
     setDraftVariety(session.variety ?? '')
-    setDraftNotes(session.notes ?? '')
+    setDraftNotes(parsedSessionNotes.plainNotes)
     setSurveySpeciesCodes(session.surveySpeciesCodes ?? [])
     setCustomSurveySpeciesIds(session.customSurveySpeciesIds ?? [])
     setPlannerTargets(
@@ -106,19 +124,22 @@ export default function SessionDetailPage() {
         areaHectares: section.areaHectares != null ? String(section.areaHectares) : '',
       })),
     )
-  }, [session?.id, session?.version])
+  }, [parsedSessionNotes.plainNotes, session?.id, session?.version])
 
   useEffect(() => {
     if (!session) return
     setWeatherTemp(session.temperatureCelsius != null ? String(session.temperatureCelsius) : '')
     setWeatherRh(session.relativeHumidityPercent != null ? String(session.relativeHumidityPercent) : '')
-    setWeatherTime(session.observationTime ?? '')
+    setWeatherTime(session.observationTime ?? deviceDefaults.observationTime)
+    setWeatherTimezone(session.observationTimezone ?? deviceDefaults.observationTimezone)
     setWeatherNotes(session.weatherNotes ?? '')
   }, [
+    deviceDefaults,
     session?.id,
     session?.temperatureCelsius,
     session?.relativeHumidityPercent,
     session?.observationTime,
+    session?.observationTimezone,
     session?.weatherNotes,
   ])
 
@@ -233,10 +254,11 @@ export default function SessionDetailPage() {
     } finally { setActionLoading(false) }
   }
 
-  async function handleComplete(comment: string) {
+  async function handleSubmit(comment: string) {
     if (!sessionId || !session) return
     setActionLoading(true)
     try {
+      await hotspotEditorRef.current?.flushPendingChanges()
       for (const section of session.sections) {
         await observationGridRefs.current[section.targetId]?.flushPendingChanges()
       }
@@ -244,14 +266,34 @@ export default function SessionDetailPage() {
       const latestSession = await sessionsApi.get(sessionId)
       setSession(latestSession)
 
-      setSession(await sessionsApi.complete(sessionId, {
-        version: latestSession.version, confirmationAcknowledged: true,
+      setSession(await sessionsApi.submit(sessionId, {
+        version: latestSession.version,
+        confirmationAcknowledged: true,
         actorName: myName, comment: comment || undefined,
       }))
-      flash('Session completed and locked')
+      flash('Session submitted for approval')
       setShowCompleteWarn(false)
     } catch (e: any) {
-      flash(e?.response?.data?.message ?? 'Failed to complete session', 'error')
+      flash(e?.response?.data?.message ?? 'Failed to submit session', 'error')
+    } finally { setActionLoading(false) }
+  }
+
+  async function handleAccept(comment: string) {
+    if (!sessionId || !session) return
+    setActionLoading(true)
+    try {
+      const latestSession = await sessionsApi.get(sessionId)
+      setSession(latestSession)
+
+      setSession(await sessionsApi.accept(sessionId, {
+        version: latestSession.version,
+        actorName: myName,
+        comment: comment || undefined,
+      }))
+      flash('Session accepted and marked completed')
+      setShowAcceptWarn(false)
+    } catch (e: any) {
+      flash(e?.response?.data?.message ?? 'Failed to accept session', 'error')
     } finally { setActionLoading(false) }
   }
 
@@ -283,7 +325,7 @@ export default function SessionDetailPage() {
                 areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
               }),
         })),
-        notes:       draftNotes   || undefined,
+        notes:       buildSessionNotesValue(draftNotes, parsedSessionNotes.metadata),
         version:     session.version,
         actorName:   myName,
       })
@@ -307,6 +349,7 @@ export default function SessionDetailPage() {
         temperatureCelsius: weatherTemp === '' ? undefined : Number(weatherTemp),
         relativeHumidityPercent: weatherRh === '' ? undefined : Number(weatherRh),
         observationTime: weatherTime || undefined,
+        observationTimezone: weatherTimezone.trim() || undefined,
         weatherNotes: weatherNotes || undefined,
         version: session.version,
         actorName: myName,
@@ -381,26 +424,31 @@ export default function SessionDetailPage() {
   // Action matrix — mirrors SessionStateMachine + @PreAuthorize in ScoutingSessionController
   //
   // SCOUT only (assigned to this session):
-  const canStart    = isAssignedScout && STARTABLE.includes(session.status)
-  const canComplete = isAssignedScout && ['IN_PROGRESS', 'SUBMITTED', 'REOPENED', 'INCOMPLETE'].includes(session.status)
+  const canStart = isAssignedScout && STARTABLE.includes(session.status)
+  const canSubmit = isAssignedScout && ['IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
+  const canAccept = isManager && session.status === 'SUBMITTED'
+  const isWaitingForApproval = isAssignedScout && session.status === 'SUBMITTED'
 
   // MANAGER / FARM_ADMIN / SUPER_ADMIN — reopen is COMPLETED only (per reopenSession service)
   const canReopen = isManager && session.status === 'COMPLETED'
   const canEditWeather =
-    (isAssignedScout && ['NEW', 'IN_PROGRESS', 'REOPENED', 'INCOMPLETE', 'SUBMITTED'].includes(session.status)) ||
-    (canManagePlanner && plannerEditing)
+    isAssignedScout && ['IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
+  const canEditRemarkPhotos = isAssignedScout && ['IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
   const canSeeAuditTrail = !isScout
+  const isOpenRestricted = !isScout && !!session.openRestricted
   const parsedWeatherTemp = weatherTemp.trim() === '' ? null : Number(weatherTemp)
   const parsedWeatherRh = weatherRh.trim() === '' ? null : Number(weatherRh)
   const weatherHasValues =
     weatherTemp.trim() !== '' ||
     weatherRh.trim() !== '' ||
     weatherTime.trim() !== '' ||
+    weatherTimezone.trim() !== '' ||
     weatherNotes.trim() !== ''
   const weatherDirty =
     (parsedWeatherTemp ?? null) !== (session.temperatureCelsius ?? null) ||
     (parsedWeatherRh ?? null) !== (session.relativeHumidityPercent ?? null) ||
     weatherTime !== (session.observationTime ?? '') ||
+    weatherTimezone.trim() !== (session.observationTimezone ?? '').trim() ||
     weatherNotes.trim() !== (session.weatherNotes ?? '').trim()
   const weatherPanelTone = weatherSaving
     ? {
@@ -433,6 +481,29 @@ export default function SessionDetailPage() {
         body: '#6b7280',
         hint: 'Enter the weather values manually for now.',
       }
+
+  if (isOpenRestricted) return (
+    <div style={{ padding: '24px 28px', maxWidth: 760 }}>
+      <div className="card" style={{ border: '0.5px solid #d1d5db' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div>
+            <h1 style={{ color: '#111827', fontSize: 20, marginBottom: 6 }}>
+              {session.farmName ?? 'Farm session'} · {formatSessionWeekLabel(session)}
+            </h1>
+            <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 12 }}>
+              This session is still in progress and is restricted for management access.
+            </p>
+            <div style={{ padding: '12px 14px', borderRadius: 8, background: '#f9fafb', border: '0.5px solid #e5e7eb', fontSize: 12, color: '#374151' }}>
+              The session board keeps this row visible, but the detail page stays blocked until the assigned scout finishes the active session work.
+            </div>
+          </div>
+          <button className="btn-secondary" style={{ fontSize: 12 }} onClick={() => navigate('/sessions')}>
+            Back to sessions
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 
   // SUPER_ADMIN can request remote start on startable sessions with an assigned scout
   const canRequestRemoteStart =
@@ -470,6 +541,34 @@ export default function SessionDetailPage() {
         />
       )}
 
+      {isWaitingForApproval && (
+        <div style={{
+          marginBottom: 20,
+          padding: '12px 14px',
+          borderRadius: 10,
+          background: '#eff6ff',
+          border: '0.5px solid #93c5fd',
+          color: '#1e40af',
+          fontSize: 12,
+        }}>
+          This session has been submitted and is now read-only while you wait for manager or admin approval.
+        </div>
+      )}
+
+      {isAssignedScout && session.status === 'NEW' && (
+        <div style={{
+          marginBottom: 20,
+          padding: '12px 14px',
+          borderRadius: 10,
+          background: '#fffbeb',
+          border: '0.5px solid #fde68a',
+          color: '#92400e',
+          fontSize: 12,
+        }}>
+          Start the session before entering counts, remarks, hotspot issues, or weather.
+        </div>
+      )}
+
       {/* Planner form */}
       {canManagePlanner && (
         <div className="card" style={{ marginBottom: 20, border: '1.5px solid #bae6fd', background: '#f0f9ff' }}>
@@ -501,8 +600,14 @@ export default function SessionDetailPage() {
                       setDraftWeek(session.weekNumber)
                       setDraftCrop(session.crop ?? '')
                       setDraftVariety(session.variety ?? '')
-                      setDraftNotes(session.notes ?? '')
+                      setDraftNotes(parsedSessionNotes.plainNotes)
                       setSurveySpeciesCodes(session.surveySpeciesCodes ?? [])
+                      setCustomSurveySpeciesIds(session.customSurveySpeciesIds ?? [])
+                      setWeatherTemp(session.temperatureCelsius != null ? String(session.temperatureCelsius) : '')
+                      setWeatherRh(session.relativeHumidityPercent != null ? String(session.relativeHumidityPercent) : '')
+                      setWeatherTime(session.observationTime ?? deviceDefaults.observationTime)
+                      setWeatherTimezone(session.observationTimezone ?? deviceDefaults.observationTimezone)
+                      setWeatherNotes(session.weatherNotes ?? '')
                       setPlannerTargets(
                         session.sections.map(section => ({
                           structureId: section.greenhouseId ?? section.fieldBlockId ?? section.targetId,
@@ -611,13 +716,13 @@ export default function SessionDetailPage() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
             <h1 style={{ color: '#111827', fontSize: 20 }}>
-              {session.crop ?? 'Session'}{session.variety ? ` · ${session.variety}` : ''} — W{session.weekNumber}
+              {session.crop ?? 'Session'}{session.variety ? ` · ${session.variety}` : ''} — {formatSessionWeekLabel(session)}
             </h1>
             <span className={`badge ${badge?.cls ?? 'badge-gray'}`}>{badge?.label ?? session.status}</span>
           </div>
           <p style={{ fontSize: 12, color: '#9ca3af' }}>{formatDate(session.sessionDate)}</p>
           <p style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
-            Scout: {assignedScoutName || 'Unassigned'}
+            {session.farmName ? `${session.farmName} · ` : ''}Scout: {assignedScoutName || 'Unassigned'}
           </p>
         </div>
 
@@ -638,12 +743,18 @@ export default function SessionDetailPage() {
           )}
 
           {/* SCOUT: Complete — opens warning modal */}
-          {canComplete && (
+          {canSubmit && (
             <button
               style={{ padding: '8px 14px', borderRadius: 8, border: '0.5px solid #059669', cursor: 'pointer', fontSize: 12, fontWeight: 500, fontFamily: 'inherit', background: '#059669', color: '#fff' }}
               disabled={actionLoading}
               onClick={() => setShowCompleteWarn(true)}>
-              ✓ Complete session
+              Submit session
+            </button>
+          )}
+
+          {canAccept && (
+            <button className="btn-primary" style={{ fontSize: 12 }} disabled={actionLoading} onClick={() => setShowAcceptWarn(true)}>
+              Accept session
             </button>
           )}
 
@@ -700,7 +811,8 @@ export default function SessionDetailPage() {
       {/* ── Metadata grid ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12, marginBottom: 24 }}>
         {[
-          { label: 'Week',        value: `W${session.weekNumber}` },
+          { label: 'Week',        value: formatSessionWeekLabel(session) },
+          { label: 'Farm',        value: session.farmName ?? session.farmId },
           { label: 'Date',        value: formatDate(session.sessionDate) },
           { label: 'Scout',       value: assignedScoutName || '—' },
           { label: 'Crop',        value: session.crop ?? '—' },
@@ -719,15 +831,28 @@ export default function SessionDetailPage() {
       </div>
 
       {/* Notes */}
-      {session.notes && (
+      {parsedSessionNotes.plainNotes && (
         <div className="card" style={{ marginBottom: 20 }}>
           <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 6 }}>Session notes</p>
-          <p style={{ fontSize: 12, color: '#6b7280' }}>{session.notes}</p>
+          <p style={{ fontSize: 12, color: '#6b7280' }}>{parsedSessionNotes.plainNotes}</p>
         </div>
       )}
 
+      <SessionRemarkPhotos
+        ref={hotspotEditorRef}
+        session={session}
+        actorName={myName}
+        isEditable={canEditRemarkPhotos}
+        onSessionUpdated={setSession}
+      />
+
       {/* Weather */}
-      {(canEditWeather || session.temperatureCelsius != null || session.relativeHumidityPercent != null || session.observationTime || session.weatherNotes) && (
+      {(canEditWeather ||
+        session.temperatureCelsius != null ||
+        session.relativeHumidityPercent != null ||
+        session.observationTime ||
+        session.observationTimezone ||
+        session.weatherNotes) && (
         <div className="card" style={{ marginBottom: 20, background: weatherPanelTone.background, border: weatherPanelTone.border }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
             <div>
@@ -742,7 +867,7 @@ export default function SessionDetailPage() {
           </div>
 
           {canEditWeather ? (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
               <div>
                 <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Temp</label>
                 <input className="input" type="number" value={weatherTemp} onChange={e => setWeatherTemp(e.target.value)} placeholder="Celsius" />
@@ -756,6 +881,23 @@ export default function SessionDetailPage() {
                 <input className="input" type="time" value={weatherTime} onChange={e => setWeatherTime(e.target.value)} />
               </div>
               <div>
+                <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Timezone</label>
+                <>
+                  <input
+                    className="input"
+                    list="weather-timezone-options"
+                    placeholder="America/Chicago"
+                    value={weatherTimezone}
+                    onChange={e => setWeatherTimezone(e.target.value)}
+                  />
+                  <datalist id="weather-timezone-options">
+                    {deviceDefaults.timezoneOptions.map(timezone => (
+                      <option key={timezone} value={timezone} />
+                    ))}
+                  </datalist>
+                </>
+              </div>
+              <div>
                 <label style={{ display: 'block', fontSize: 11, color: '#374151', marginBottom: 4 }}>Remarks</label>
                 <input className="input" value={weatherNotes} onChange={e => setWeatherNotes(e.target.value)} placeholder="Optional weather notes" />
               </div>
@@ -765,6 +907,7 @@ export default function SessionDetailPage() {
               {session.temperatureCelsius != null && <span>Temp {session.temperatureCelsius} C</span>}
               {session.relativeHumidityPercent != null && <span>RH {session.relativeHumidityPercent}%</span>}
               {session.observationTime && <span>Time {session.observationTime}</span>}
+              {session.observationTimezone && <span>Timezone {session.observationTimezone}</span>}
               {session.weatherNotes && <span style={{ color: '#6b7280' }}>{session.weatherNotes}</span>}
             </div>
           )}
@@ -776,7 +919,7 @@ export default function SessionDetailPage() {
         const sectionObs = section.observations.filter(o => !o.deleted)
         const canEditObservations = isAssignedScout && ['IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
         const canEditObservationNotes =
-          isAssignedScout && ['IN_PROGRESS', 'REOPENED', 'INCOMPLETE', 'SUBMITTED', 'COMPLETED'].includes(session.status)
+          isAssignedScout && ['IN_PROGRESS', 'REOPENED', 'INCOMPLETE'].includes(session.status)
         return (
           <div key={section.targetId} className="card" style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -816,11 +959,15 @@ export default function SessionDetailPage() {
               }}
               section={section}
               sessionId={sessionId!}
+              sessionVersion={session.version}
+              sessionNotes={session.notes}
+              actorName={myName}
               isEditable={canEditObservations}
               canEditNotes={canEditObservationNotes}
               farmId={session.farmId}
               surveySpeciesCodes={session.surveySpeciesCodes}
               customSurveySpeciesIds={session.customSurveySpeciesIds}
+              onSessionUpdated={setSession}
             />
           </div>
         )
@@ -861,14 +1008,27 @@ export default function SessionDetailPage() {
 
       {showCompleteWarn && (
         <WarningModal
-          title="Complete this session?"
-          warning="Are you sure you want to complete this scouting session? You will not be able to edit it afterward."
-          confirmLabel="Yes, complete and lock"
+          title="Submit this session?"
+          warning="Submit this session for manager or admin approval. After submit, the session becomes read-only until it is accepted or reopened."
+          confirmLabel="Submit session"
           confirmColor="#059669"
-          onConfirm={handleComplete}
+          onConfirm={handleSubmit}
           onCancel={() => setShowCompleteWarn(false)}
           loading={actionLoading}
-          commentPlaceholder="Optional completion note"
+          commentPlaceholder="Optional submit note"
+        />
+      )}
+
+      {showAcceptWarn && (
+        <WarningModal
+          title="Accept this session?"
+          warning="Accepting the submitted session marks it completed. Admin roles can reopen it later if more work is needed."
+          confirmLabel="Accept session"
+          confirmColor="#1e5c3a"
+          onConfirm={handleAccept}
+          onCancel={() => setShowAcceptWarn(false)}
+          loading={actionLoading}
+          commentPlaceholder="Optional acceptance note"
         />
       )}
 

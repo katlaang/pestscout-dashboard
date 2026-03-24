@@ -8,15 +8,19 @@ import type {
   ScoutingPhotoDto, RegisterScoutingPhotoRequest, RegisterScoutingPhotoResponse, ConfirmScoutingPhotoRequest,
   HeatmapResponse,
   MonthlyHeatmapResponse,
-  DashboardDto, DashboardSummaryDto,
+  DashboardDto, DashboardOverviewDto, DashboardSummaryDto,
   WeeklyPestTrendDto, SeverityTrendPointDto,
   AlertDto, RecommendationDto,
   PestDistributionItemDto,
+  GreenhouseWeeklyTrendResponse,
   ResetPasswordRequest,
   ErrorResponse,
   // Super Admin
   CreateUserRequest, UpdateUserRequest, UserSearchParams, PagedResponse,
   UpdateFarmLicenseRequest, UpdateFarmRequest, CreateFarmRequest,
+  FarmLayoutPreviewPolygon,
+  FarmLayoutPreviewRequest,
+  FarmLayoutPreviewResponse,
   CreateGreenhouseRequest, UpdateGreenhouseRequest, GreenhouseResponse,
   CreateFieldBlockRequest, UpdateFieldBlockRequest, FieldBlockResponse,
   FarmMemberResponse,
@@ -195,6 +199,8 @@ export interface CreateSessionRequest {
   surveySpeciesCodes?: SpeciesCode[]
   customSurveySpeciesIds?: string[]
   notes?: string
+  observationTime?: string
+  observationTimezone?: string
   actorName?: string
   deviceId?: string
 }
@@ -208,10 +214,16 @@ export interface SubmitSessionRequest {
   deviceId?: string
 }
 
+export interface AcceptSessionRequest {
+  version: number
+  actorName: string
+  comment?: string
+  deviceId?: string
+}
+
 /** POST /api/scouting/sessions/{id}/complete — manager approves */
 export interface CompleteSessionRequest {
   version: number
-  confirmationAcknowledged: boolean
   actorName: string               // required for audit
   comment?: string
   deviceId?: string
@@ -237,6 +249,7 @@ export interface UpdateSessionRequest {
   temperatureCelsius?: number
   relativeHumidityPercent?: number
   observationTime?: string
+  observationTimezone?: string
   weatherNotes?: string
   version?: number
   actorName?: string
@@ -251,9 +264,9 @@ export interface RemoteStartRequestBody {
 }
 
 export const sessionsApi = {
-  list: (farmId: string) =>
+  list: (farmId?: string) =>
     api.get<ScoutingSessionDetailDto[]>('/api/scouting/sessions', {
-      params: { farmId }
+      params: farmId ? { farmId } : undefined
     }).then(r => r.data),
 
   get: (sessionId: string) =>
@@ -291,6 +304,9 @@ export const sessionsApi = {
    */
   submit: (sessionId: string, body: SubmitSessionRequest) =>
     api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/submit`, body).then(r => r.data),
+
+  accept: (sessionId: string, body: AcceptSessionRequest) =>
+    api.post<ScoutingSessionDetailDto>(`/api/scouting/sessions/${sessionId}/accept`, body).then(r => r.data),
 
   /**
    * SCOUT completes session — locks it. Requires confirmationAcknowledged: true + actorName.
@@ -365,6 +381,9 @@ export const customSpeciesApi = {
 // ─── Analytics ────────────────────────────────────────────────────────────────
 
 export const analyticsApi = {
+  dashboardOverview: () =>
+    api.get<DashboardOverviewDto>('/api/analytics/dashboard/overview').then(r => r.data),
+
   dashboard: (farmId: string) =>
     api.get<DashboardSummaryDto>('/api/analytics/dashboard', {
       params: { farmId }
@@ -388,6 +407,11 @@ export const analyticsApi = {
   severityTrend: (farmId: string) =>
     api.get<SeverityTrendPointDto[]>('/api/analytics/trend/severity', {
       params: { farmId }
+    }).then(r => r.data),
+
+  greenhouseWeekly: (farmId: string, year: number, species: SpeciesCode) =>
+    api.get<GreenhouseWeeklyTrendResponse>('/api/analytics/trend/greenhouse-weekly', {
+      params: { farmId, year, species }
     }).then(r => r.data),
 
   pestDistribution: (farmId: string) =>
@@ -476,6 +500,9 @@ export const adminFarmsApi = {
 
   create: (body: CreateFarmRequest) =>
     api.post<FarmResponse>('/api/farms', body).then(r => r.data),
+
+  previewLayout: (body: FarmLayoutPreviewRequest) =>
+    api.post<FarmLayoutPreviewResponse | FarmLayoutPreviewPolygon[]>('/api/farms/layout/preview', body).then(r => r.data),
 
   // Backend controller only has PUT — must send full valid body
   update: (farmId: string, currentFarm: FarmResponse, overrides: UpdateFarmRequest) =>

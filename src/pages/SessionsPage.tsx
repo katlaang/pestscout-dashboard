@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { farmsApi, sessionsApi, adminFarmsApi, adminUsersApi } from '@/services/api'
 import type {
   FarmResponse,
@@ -13,19 +13,26 @@ import type {
 import type { CreateSessionRequest, SessionTargetRequest } from '@/services/api'
 import ConfirmModal from '@/components/common/ConfirmModal'
 import SessionPlannerFields, { type SessionPlannerTargetDraft } from '@/components/scouting/SessionPlannerFields'
-import { SESSION_STATUS_BADGE, formatDate, exportToCsv, currentWeek } from '@/utils'
+import {
+  SESSION_STATUS_BADGE,
+  currentWeek,
+  exportToCsv,
+  formatDate,
+  formatLocalDateInput,
+  formatSessionWeekLabel,
+} from '@/utils'
 import { useAuthStore } from '@/hooks/useAuth'
 
 const ADMIN_ROLES = ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER']
 const CAN_CREATE_SESSION = new Set(ADMIN_ROLES)
 const MANAGEABLE_STATUSES = new Set<SessionStatus>(['DRAFT', 'NEW'])
+const ALL_FARMS_VALUE = '__all__'
 
 function isVisibleToRole(session: ScoutingSessionDetailDto, role: string, userId: string): boolean {
-  const superAdminStatuses = new Set<SessionStatus>(['DRAFT', 'NEW', 'COMPLETED', 'INCOMPLETE', 'REOPENED'])
   const scoutStatuses = new Set<SessionStatus>(['NEW', 'IN_PROGRESS', 'SUBMITTED', 'REOPENED', 'INCOMPLETE', 'COMPLETED'])
 
   if (role === 'SUPER_ADMIN') {
-    return superAdminStatuses.has(session.status)
+    return true
   }
 
   if (role === 'SCOUT') {
@@ -41,6 +48,7 @@ function statusFiltersForRole(role: string): { value: SessionStatus | 'ALL'; lab
       { value: 'ALL', label: 'All mine' },
       { value: 'NEW', label: 'New' },
       { value: 'IN_PROGRESS', label: 'In progress' },
+      { value: 'SUBMITTED', label: 'Submitted' },
       { value: 'REOPENED', label: 'Reopened' },
       { value: 'INCOMPLETE', label: 'Incomplete' },
       { value: 'COMPLETED', label: 'Completed' },
@@ -52,6 +60,8 @@ function statusFiltersForRole(role: string): { value: SessionStatus | 'ALL'; lab
       { value: 'ALL', label: 'All' },
       { value: 'DRAFT', label: 'Draft' },
       { value: 'NEW', label: 'New' },
+      { value: 'IN_PROGRESS', label: 'In progress' },
+      { value: 'SUBMITTED', label: 'Submitted' },
       { value: 'REOPENED', label: 'Reopened' },
       { value: 'COMPLETED', label: 'Completed' },
       { value: 'INCOMPLETE', label: 'Incomplete' },
@@ -63,6 +73,7 @@ function statusFiltersForRole(role: string): { value: SessionStatus | 'ALL'; lab
     { value: 'DRAFT', label: 'Draft' },
     { value: 'NEW', label: 'New' },
     { value: 'IN_PROGRESS', label: 'In progress' },
+    { value: 'SUBMITTED', label: 'Submitted' },
     { value: 'REOPENED', label: 'Reopened' },
     { value: 'COMPLETED', label: 'Completed' },
     { value: 'INCOMPLETE', label: 'Incomplete' },
@@ -75,8 +86,11 @@ function canManageSession(role: string, status: SessionStatus): boolean {
 
 export default function SessionsPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { user } = useAuthStore()
   const role = user?.role ?? ''
+  const isScout = role === 'SCOUT'
+  const isSuperAdmin = role === 'SUPER_ADMIN'
   const canCreate = CAN_CREATE_SESSION.has(role)
   const showActionColumn = ADMIN_ROLES.includes(role)
 
@@ -92,7 +106,7 @@ export default function SessionsPage() {
   const [deleteLoading, setDeleteLoading] = useState(false)
 
   useEffect(() => {
-    if (role === 'SCOUT') {
+    if (isScout) {
       const farmId = user?.farmId
       if (!farmId) return
 
@@ -102,18 +116,44 @@ export default function SessionsPage() {
     }
 
     farmsApi.list().then(data => {
+      const farmParam = searchParams.get('farm')
+      const matchedFarm = farmParam ? data.find(farm => farm.id === farmParam) : undefined
+
       setFarms(data)
-      if (data.length > 0) setSelectedFarmId(data[0].id)
+
+      if (isSuperAdmin && (farmParam === ALL_FARMS_VALUE || !farmParam)) {
+        setSelectedFarmId(ALL_FARMS_VALUE)
+        return
+      }
+
+      if (matchedFarm) {
+        setSelectedFarmId(matchedFarm.id)
+        return
+      }
+
+      if (data.length > 0) {
+        setSelectedFarmId(isSuperAdmin ? ALL_FARMS_VALUE : data[0].id)
+      }
     })
-  }, [role, user?.farmId])
+  }, [isScout, isSuperAdmin, searchParams, user?.farmId])
 
   useEffect(() => {
     if (!selectedFarmId) return
     setLoading(true)
-    sessionsApi.list(selectedFarmId)
+
+    const listPromise = isSuperAdmin && selectedFarmId === ALL_FARMS_VALUE
+      ? sessionsApi.list()
+      : sessionsApi.list(selectedFarmId)
+
+    listPromise
       .then(setSessions)
       .finally(() => setLoading(false))
-  }, [selectedFarmId])
+  }, [isSuperAdmin, selectedFarmId])
+
+  function handleFarmSelection(nextFarmId: string) {
+    setSelectedFarmId(nextFarmId)
+    setSearchParams({ farm: nextFarmId }, { replace: true })
+  }
 
   const filtered = sessions.filter(session => {
     if (!isVisibleToRole(session, role, user?.id ?? '')) return false
@@ -124,7 +164,8 @@ export default function SessionsPage() {
       !query ||
       session.crop?.toLowerCase().includes(query) ||
       session.variety?.toLowerCase().includes(query) ||
-      session.id.toLowerCase().includes(query)
+      session.id.toLowerCase().includes(query) ||
+      session.farmName?.toLowerCase().includes(query)
 
     return matchesStatus && matchesSearch
   })
@@ -151,6 +192,7 @@ export default function SessionsPage() {
   }
 
   const statusFilters = statusFiltersForRole(role)
+  const showFarmColumn = isSuperAdmin && selectedFarmId === ALL_FARMS_VALUE
 
   return (
     <div style={{ padding: '24px 28px' }}>
@@ -167,11 +209,13 @@ export default function SessionsPage() {
         <div>
           <h1 style={{ color: '#111827', marginBottom: 4 }}>Sessions</h1>
           <p style={{ fontSize: 13, color: '#6b7280' }}>
-            {role === 'SCOUT'
+            {isScout
               ? 'Your assigned scouting sessions'
-              : role === 'SUPER_ADMIN'
-              ? 'Sessions visible to management per farm'
-              : 'All scouting sessions on your farm'}
+              : isSuperAdmin && selectedFarmId === ALL_FARMS_VALUE
+              ? 'All-farm session board with optional farm filtering'
+              : isSuperAdmin
+              ? 'Sessions for the selected farm'
+              : 'Sessions across your attached farms'}
           </p>
         </div>
 
@@ -182,17 +226,19 @@ export default function SessionsPage() {
             onClick={() => {
               const rows = filtered.map(session => ({
                 id: session.id,
+                farm: session.farmName ?? '',
                 status: session.status,
                 crop: session.crop ?? '',
                 variety: session.variety ?? '',
-                week: session.weekNumber,
+                week: formatSessionWeekLabel(session),
                 date: session.sessionDate,
+                restricted: session.openRestricted ? 'Yes' : 'No',
                 observations: session.sections.reduce(
                   (count, section) => count + section.observations.filter(observation => !observation.deleted).length,
                   0,
                 ),
               }))
-              exportToCsv(`sessions-${selectedFarmId}.csv`, rows)
+              exportToCsv(`sessions-${selectedFarmId || 'board'}.csv`, rows)
             }}
           >
             Export CSV
@@ -249,27 +295,27 @@ export default function SessionsPage() {
             color: '#0369a1',
           }}
         >
-          Showing management-visible sessions. In-progress and submitted sessions stay with the assigned scout.
+          In-progress sessions remain visible across farms, but rows marked restricted cannot be opened until the scout finishes that active work.
         </div>
       )}
 
       {showCreate && (
         <CreateSessionModal
           farms={farms}
-          defaultFarmId={selectedFarmId}
+          defaultFarmId={selectedFarmId === ALL_FARMS_VALUE ? (farms[0]?.id ?? '') : selectedFarmId}
           onCreated={session => {
-            if (session.farmId === selectedFarmId) {
+            if (selectedFarmId === ALL_FARMS_VALUE || session.farmId === selectedFarmId) {
               setSessions(prev => [session, ...prev.filter(existing => existing.id !== session.id)])
             }
             setShowCreate(false)
-            flash(session.status === 'DRAFT' ? 'Draft session saved' : `Session created - W${session.weekNumber}`)
+            flash(session.status === 'DRAFT' ? 'Draft session saved' : `Session created - ${formatSessionWeekLabel(session)}`)
           }}
           onCancel={() => setShowCreate(false)}
         />
       )}
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
-        {role === 'SCOUT' ? (
+        {isScout ? (
           <div
             className="input"
             style={{
@@ -283,7 +329,8 @@ export default function SessionsPage() {
             {farms[0]?.name ?? 'Your farm'}
           </div>
         ) : (
-          <select className="input" style={{ width: 180 }} value={selectedFarmId} onChange={e => setSelectedFarmId(e.target.value)}>
+          <select className="input" style={{ width: 220 }} value={selectedFarmId} onChange={e => handleFarmSelection(e.target.value)}>
+            {isSuperAdmin && <option value={ALL_FARMS_VALUE}>All farms</option>}
             {farms.map(farm => <option key={farm.id} value={farm.id}>{farm.name}</option>)}
           </select>
         )}
@@ -331,7 +378,15 @@ export default function SessionsPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: '0.5px solid #e5e7eb', background: '#f9fafb' }}>
-                {['Session', 'Date', 'Week', 'Crop / variety', 'Observations', 'Status'].map(header => (
+                {[
+                  ...(showFarmColumn ? ['Farm'] : []),
+                  'Session',
+                  'Date',
+                  'Week',
+                  'Crop / variety',
+                  'Observations',
+                  'Status',
+                ].map(header => (
                   <th
                     key={header}
                     style={{
@@ -372,7 +427,7 @@ export default function SessionsPage() {
                   0,
                 )
                 const remoteStartPending = !!(session as any).remoteStartConsentRequired
-                const isBlocked = (role === 'FARM_ADMIN' || role === 'MANAGER') && session.status === 'IN_PROGRESS'
+                const isBlocked = !isScout && !!session.openRestricted
                 const isManageable = canManageSession(role, session.status)
 
                 return (
@@ -393,11 +448,19 @@ export default function SessionsPage() {
                       e.currentTarget.style.background = ''
                     }}
                   >
+                    {showFarmColumn && (
+                      <td style={{ padding: '10px 14px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <span style={{ color: '#111827', fontWeight: 500 }}>{session.farmName ?? 'Unknown farm'}</span>
+                          <span style={{ fontSize: 10, color: '#9ca3af' }}>{session.farmId.slice(0, 8)}</span>
+                        </div>
+                      </td>
+                    )}
                     <td style={{ padding: '10px 14px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#9ca3af' }}>
                       {session.id.slice(0, 8)}...
                     </td>
                     <td style={{ padding: '10px 14px' }}>{formatDate(session.sessionDate)}</td>
-                    <td style={{ padding: '10px 14px', fontWeight: 500 }}>W{session.weekNumber}</td>
+                    <td style={{ padding: '10px 14px', fontWeight: 500 }}>{formatSessionWeekLabel(session)}</td>
                     <td style={{ padding: '10px 14px' }}>
                       <span style={{ color: '#111827' }}>{session.crop ?? '-'}</span>
                       {session.variety && <span style={{ color: '#9ca3af', marginLeft: 6 }}>{session.variety}</span>}
@@ -420,11 +483,29 @@ export default function SessionsPage() {
                             start requested
                           </span>
                         )}
+                        {isBlocked && (
+                          <span
+                            style={{
+                              fontSize: 9,
+                              fontWeight: 600,
+                              padding: '2px 6px',
+                              borderRadius: 20,
+                              background: '#6b7280',
+                              color: '#fff',
+                            }}
+                          >
+                            restricted
+                          </span>
+                        )}
                       </div>
                     </td>
                     {showActionColumn && (
                       <td style={{ padding: '10px 14px' }}>
-                        {isManageable ? (
+                        {isBlocked ? (
+                          <span style={{ fontSize: 11, color: '#6b7280' }}>
+                            Locked while in progress
+                          </span>
+                        ) : isManageable ? (
                           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                             <button
                               className="btn-secondary"
@@ -497,7 +578,7 @@ function CreateSessionModal({
   const [dismissSaving, setDismissSaving] = useState(false)
   const [dismissPromptOpen, setDismissPromptOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [initialSessionDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [initialSessionDate] = useState(() => formatLocalDateInput())
   const [farmId, setFarmId] = useState(defaultFarmId)
   const [scouts, setScouts] = useState<UserDto[]>([])
   const [structures, setStructures] = useState<(GreenhouseResponse | FieldBlockResponse)[]>([])
@@ -750,7 +831,7 @@ function CreateSessionModal({
             )}
           </Field>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
             <Field label="Crop">
               <input className="input" placeholder="e.g. Tomato" value={crop} onChange={e => setCrop(e.target.value)} />
             </Field>

@@ -6,6 +6,9 @@ import type {
   CreateFarmRequest,
   FarmFieldBlockDraftRequest,
   FarmGreenhouseDraftRequest,
+  FarmLayoutPreviewPoint,
+  FarmLayoutPreviewPolygon,
+  FarmLayoutPreviewResponse,
   FarmResponse,
   GreenhouseBayRequest,
   UserDto,
@@ -44,6 +47,54 @@ function createFieldDraft(): FarmFieldBlockDraftRequest {
   }
 }
 
+type PreviewPolygon = {
+  id: string
+  name: string
+  points: Array<{ x: number; y: number }>
+}
+
+const PREVIEW_COLORS = ['#1e5c3a', '#2d7a50', '#5ba87a', '#87c59f', '#b2dec1', '#dbeee2']
+
+function parsePreviewCoordinate(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function polygonPoints(polygon: FarmLayoutPreviewPolygon): FarmLayoutPreviewPoint[] {
+  if (Array.isArray(polygon.points)) return polygon.points
+  if (Array.isArray(polygon.polygon)) return polygon.polygon
+  if (Array.isArray(polygon.coordinates)) return polygon.coordinates
+  return []
+}
+
+function normalizePreviewPolygons(response: FarmLayoutPreviewResponse | FarmLayoutPreviewPolygon[]): PreviewPolygon[] {
+  const rawPolygons = Array.isArray(response) ? response : (Array.isArray(response.polygons) ? response.polygons : [])
+
+  return rawPolygons
+    .map((polygon, index) => {
+      const points = polygonPoints(polygon)
+        .map(point => {
+          const x = parsePreviewCoordinate(point.x ?? point.lng ?? point.longitude)
+          const y = parsePreviewCoordinate(point.y ?? point.lat ?? point.latitude)
+          return x == null || y == null ? null : { x, y }
+        })
+        .filter((point): point is { x: number; y: number } => point != null)
+
+      if (points.length < 3) return null
+
+      return {
+        id: polygon.id ?? `preview-${index}`,
+        name: polygon.greenhouseName ?? polygon.targetName ?? polygon.label ?? polygon.name ?? `Greenhouse ${index + 1}`,
+        points,
+      }
+    })
+    .filter((polygon): polygon is PreviewPolygon => polygon != null)
+}
+
 function formatUserLabel(user: UserDto) {
   const name = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim() || user.email
   return `${name} (${user.email})`
@@ -75,6 +126,15 @@ function FormField({ label, children }: { label: string; children: React.ReactNo
       {children}
     </div>
   )
+}
+
+async function assignUserToFarm(farmId: string, user: UserDto) {
+  if (user.role === 'MANAGER' || user.role === 'FARM_ADMIN') {
+    await adminFarmsApi.addMember(farmId, user.id)
+    return
+  }
+
+  await adminUsersApi.update(user.id, { farmId })
 }
 
 function UserSelector({
@@ -140,6 +200,58 @@ function UserSelector({
   )
 }
 
+function LayoutPreview({ polygons }: { polygons: PreviewPolygon[] }) {
+  const width = 640
+  const height = 320
+  const padding = 28
+  const allPoints = polygons.flatMap(polygon => polygon.points)
+  const xValues = allPoints.map(point => point.x)
+  const yValues = allPoints.map(point => point.y)
+  const minX = Math.min(...xValues)
+  const maxX = Math.max(...xValues)
+  const minY = Math.min(...yValues)
+  const maxY = Math.max(...yValues)
+  const xSpan = Math.max(maxX - minX, 1)
+  const ySpan = Math.max(maxY - minY, 1)
+  const scale = Math.min((width - padding * 2) / xSpan, (height - padding * 2) / ySpan)
+
+  function toSvgPoint(point: { x: number; y: number }) {
+    const x = padding + (point.x - minX) * scale
+    const y = height - padding - (point.y - minY) * scale
+    return `${x},${y}`
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ borderRadius: 10, border: '0.5px solid #dbe7df', background: '#f8fbf9', padding: 10 }}>
+        <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', display: 'block', borderRadius: 8, background: 'linear-gradient(180deg, #ffffff 0%, #f3f7f4 100%)' }}>
+          {polygons.map((polygon, index) => (
+            <g key={polygon.id}>
+              <polygon
+                points={polygon.points.map(toSvgPoint).join(' ')}
+                fill={`${PREVIEW_COLORS[index % PREVIEW_COLORS.length]}1F`}
+                stroke={PREVIEW_COLORS[index % PREVIEW_COLORS.length]}
+                strokeWidth={2}
+              />
+            </g>
+          ))}
+        </svg>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 }}>
+        {polygons.map((polygon, index) => (
+          <div key={polygon.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 8, background: '#f9fafb', border: '0.5px solid #e5e7eb' }}>
+            <div style={{ width: 10, height: 10, borderRadius: 3, background: PREVIEW_COLORS[index % PREVIEW_COLORS.length], flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 500, color: '#111827' }}>{polygon.name}</div>
+              <div style={{ fontSize: 10, color: '#9ca3af' }}>{polygon.points.length} points</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function CreateFarmSetupForm({
   onCreated,
   onCancel,
@@ -160,6 +272,9 @@ export default function CreateFarmSetupForm({
   const [fieldBlocks, setFieldBlocks] = useState<FarmFieldBlockDraftRequest[]>([])
   const [latitudeInput, setLatitudeInput] = useState('')
   const [longitudeInput, setLongitudeInput] = useState('')
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [previewPolygons, setPreviewPolygons] = useState<PreviewPolygon[]>([])
   const [form, setForm] = useState<CreateFarmRequest>({
     name: '',
     ownerId: NULL_UUID,
@@ -218,6 +333,7 @@ export default function CreateFarmSetupForm({
   )
   const remainingArea = roundArea((Number(form.licensedAreaHectares) || 0) - allocatedArea)
   const overAllocated = remainingArea < 0
+  const greenhousePreviewKey = greenhouses.map(greenhouse => greenhouse.name.trim()).join('|')
 
   function setField<K extends keyof CreateFarmRequest>(key: K, value: CreateFarmRequest[K]) {
     setForm(previous => ({ ...previous, [key]: value }))
@@ -267,6 +383,11 @@ export default function CreateFarmSetupForm({
   function removeFieldBlock(index: number) {
     setFieldBlocks(previous => previous.filter((_, currentIndex) => currentIndex !== index))
   }
+
+  useEffect(() => {
+    setPreviewPolygons([])
+    setPreviewError(null)
+  }, [form.structureType, latitudeInput, longitudeInput, greenhousePreviewKey])
 
   function cleanGreenhouses() {
     return greenhouses.map(greenhouse => ({
@@ -388,7 +509,12 @@ function cleanFieldBlocks() {
 
       if (assignments.length > 0) {
         const results = await Promise.allSettled(
-          assignments.map(userId => adminUsersApi.update(userId, { farmId: created.id })),
+          assignments.map(userId => {
+            const assignedUser = users.find(user => user.id === userId)
+            return assignedUser
+              ? assignUserToFarm(created.id, assignedUser)
+              : adminUsersApi.update(userId, { farmId: created.id })
+          }),
         )
 
         const failedAssignments = results.filter(result => result.status === 'rejected').length
@@ -402,6 +528,55 @@ function cleanFieldBlocks() {
       onError(error?.response?.data?.message ?? 'Failed to create farm')
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handlePreviewLayout() {
+    if (form.structureType !== 'GREENHOUSE') return
+
+    const greenhouseNames = greenhouses.map(greenhouse => greenhouse.name.trim())
+
+    if (greenhouseNames.length === 0) {
+      onError('Add at least one greenhouse before generating a layout preview')
+      return
+    }
+
+    if (greenhouseNames.some(name => !name)) {
+      onError('Name every greenhouse before generating the layout preview')
+      return
+    }
+
+    if (!latitudeInput.trim() || !longitudeInput.trim()) {
+      onError('Enter both latitude and longitude before generating the layout preview')
+      return
+    }
+
+    setPreviewLoading(true)
+    setPreviewError(null)
+
+    try {
+      const response = await adminFarmsApi.previewLayout({
+        latitude: latitudeInput.trim(),
+        longitude: longitudeInput.trim(),
+        greenhouseCount: greenhouseNames.length,
+        greenhouseNames,
+      })
+      const normalized = normalizePreviewPolygons(response)
+
+      if (normalized.length === 0) {
+        setPreviewPolygons([])
+        setPreviewError('The preview endpoint returned no polygons for this layout.')
+        return
+      }
+
+      setPreviewPolygons(normalized)
+    } catch (error: any) {
+      const message = error?.response?.data?.message ?? 'Could not generate the layout preview'
+      setPreviewPolygons([])
+      setPreviewError(message)
+      onError(message)
+    } finally {
+      setPreviewLoading(false)
     }
   }
 
@@ -518,6 +693,36 @@ function cleanFieldBlocks() {
         Allocated area: {allocatedArea} ha of {roundArea(Number(form.licensedAreaHectares) || 0)} ha. Remaining: {remainingArea} ha.
       </div>
 
+      {form.structureType === 'GREENHOUSE' && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: '#111827', marginBottom: 2 }}>Generated layout preview</div>
+              <div style={{ fontSize: 11, color: '#6b7280' }}>
+                Enter coordinates and greenhouse names, then preview the generated farm polygons before saving.
+              </div>
+            </div>
+            <button className="btn-secondary" type="button" style={{ fontSize: 12 }} onClick={handlePreviewLayout} disabled={previewLoading}>
+              {previewLoading ? 'Generating...' : 'Preview layout'}
+            </button>
+          </div>
+
+          {previewError && (
+            <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 8, background: '#fff5f5', border: '0.5px solid #fca5a5', color: '#c53030', fontSize: 12 }}>
+              {previewError}
+            </div>
+          )}
+
+          {previewPolygons.length > 0 ? (
+            <LayoutPreview polygons={previewPolygons} />
+          ) : (
+            <div style={{ border: '0.5px dashed #d1d5db', borderRadius: 10, padding: '22px 16px', textAlign: 'center', fontSize: 12, color: '#9ca3af', background: '#f9fafb' }}>
+              No preview generated yet.
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, marginBottom: 16 }}>
         <div
           style={{
@@ -584,7 +789,7 @@ function cleanFieldBlocks() {
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 500, color: '#111827', marginBottom: 2 }}>Farm members</div>
             <div style={{ fontSize: 11, color: '#6b7280' }}>
-              Assign existing users to this farm during creation. If they already belong to another farm, they will be moved here.
+              Add existing users during creation. Managers and farm admins keep their current farm access; scouts are reassigned to this farm.
             </div>
           </div>
           <input
@@ -609,7 +814,7 @@ function cleanFieldBlocks() {
           </div>
           {memberIds.length > 0 && (
             <div style={{ marginTop: 4, fontSize: 11, color: '#6b7280' }}>
-              Selected users will be assigned to this farm as their only farm.
+              Manager and farm admin selections become additional memberships. Scout selections become this scout's assigned farm.
             </div>
           )}
         </div>

@@ -1,5 +1,9 @@
 import type { SeverityLevel, SpeciesCode, SessionStatus } from '@/types'
 
+type SupportedValuesIntl = typeof Intl & {
+  supportedValuesOf?: (key: string) => string[]
+}
+
 // ─── Severity ────────────────────────────────────────────────────────────────
 
 export const SEVERITY_COLORS: Record<SeverityLevel, string> = {
@@ -95,12 +99,88 @@ export function formatName(firstName?: string, lastName?: string, fallback = 'Un
   return name || fallback
 }
 
+function padDateTimePart(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+export function formatLocalDateInput(date = new Date()): string {
+  return `${date.getFullYear()}-${padDateTimePart(date.getMonth() + 1)}-${padDateTimePart(date.getDate())}`
+}
+
+export function formatLocalTimeInput(date = new Date()): string {
+  return `${padDateTimePart(date.getHours())}:${padDateTimePart(date.getMinutes())}`
+}
+
+export function getDeviceTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+}
+
+export function getDeviceTimeZoneOptions(): string[] {
+  const deviceTimeZone = getDeviceTimeZone()
+
+  try {
+    const supported = (Intl as SupportedValuesIntl).supportedValuesOf?.('timeZone') ?? []
+    return Array.from(new Set([deviceTimeZone, ...supported]))
+  } catch {
+    return [deviceTimeZone]
+  }
+}
+
+export function getIsoWeekParts(date = new Date()): { week: number; year: number } {
+  const utcDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+  const day = utcDate.getUTCDay() || 7
+
+  utcDate.setUTCDate(utcDate.getUTCDate() + 4 - day)
+
+  const year = utcDate.getUTCFullYear()
+  const yearStart = new Date(Date.UTC(year, 0, 1))
+  const week = Math.ceil((((utcDate.getTime() - yearStart.getTime()) / 86_400_000) + 1) / 7)
+
+  return { week, year }
+}
+
+export function formatWeekKey(
+  weekNumber?: number | null,
+  year?: number | null,
+  fallback?: string | null,
+): string {
+  const normalizedFallback = fallback?.trim()
+  if (normalizedFallback) return normalizedFallback
+
+  if (typeof weekNumber === 'number' && Number.isFinite(weekNumber)) {
+    const paddedWeek = String(weekNumber).padStart(2, '0')
+    if (typeof year === 'number' && Number.isFinite(year)) {
+      return `${year}-W${paddedWeek}`
+    }
+    return `W${paddedWeek}`
+  }
+
+  return '-'
+}
+
+export function formatTrendWeekLabel(point: {
+  week?: string | null
+  weekKey?: string | null
+  weekNumber?: number | null
+  year?: number | null
+}): string {
+  return formatWeekKey(point.weekNumber, point.year, point.weekKey ?? point.week)
+}
+
+export function formatSessionWeekLabel(session: {
+  weekNumber?: number | null
+  weekYear?: number | null
+  weekKey?: string | null
+}): string {
+  return formatWeekKey(session.weekNumber, session.weekYear, session.weekKey)
+}
+
+export function getDistributionCount(item: { count?: number | null; value?: number | null }): number {
+  return item.count ?? item.value ?? 0
+}
+
 export function currentWeek(): { week: number; year: number } {
-  const now = new Date()
-  const jan4 = new Date(now.getFullYear(), 0, 4)
-  const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86_400_000)
-  const week = Math.ceil((dayOfYear + jan4.getDay()) / 7)
-  return { week, year: now.getFullYear() }
+  return getIsoWeekParts()
 }
 
 // Chart colors for pest types

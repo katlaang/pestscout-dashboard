@@ -1,527 +1,645 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
-} from 'recharts'
-import { farmsApi, analyticsApi, sessionsApi } from '@/services/api'
-import type { FarmResponse, DashboardDto, ScoutingSessionDetailDto } from '@/types'
-import KpiCard from '@/components/dashboard/KpiCard'
-import HeatmapGrid from '@/components/dashboard/HeatmapGrid'
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { analyticsApi, farmsApi, sessionsApi } from '@/services/api'
+import type {
+  DashboardDto,
+  DashboardOverviewDto,
+  DashboardOverviewFarmDto,
+  FarmResponse,
+  LicenseAlertDto,
+  PestDistributionItemDto,
+  ScoutingSessionDetailDto,
+} from '@/types'
 import AlertCard from '@/components/dashboard/AlertCard'
+import KpiCard from '@/components/dashboard/KpiCard'
 import SessionsTable from '@/components/scouting/SessionsTable'
 import { useAuthStore } from '@/hooks/useAuth'
-import { currentWeek, PEST_CHART_COLORS } from '@/utils'
+import { formatDate, formatTrendWeekLabel, getDistributionCount, PEST_CHART_COLORS } from '@/utils'
 
 const ALL_FARMS_VALUE = '__all__'
 
 export default function DashboardPage() {
+  const { user } = useAuthStore()
+
+  if (user?.role === 'SUPER_ADMIN') {
+    return <SuperAdminDashboard />
+  }
+
+  return <ManagerDashboard />
+}
+
+function ManagerDashboard() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const { user } = useAuthStore()
-  const isSuperAdmin = user?.role === 'SUPER_ADMIN'
-
   const [farms, setFarms] = useState<FarmResponse[]>([])
-  const [selectedId, setSelectedId] = useState<string>('')          // farm id OR '__all__'
+  const [overview, setOverview] = useState<DashboardOverviewDto | null>(null)
+  const [selectedFarmId, setSelectedFarmId] = useState(ALL_FARMS_VALUE)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLoading(true)
+    Promise.all([
+      farmsApi.list(),
+      analyticsApi.dashboardOverview(),
+    ])
+      .then(([farmList, dashboardOverview]) => {
+        const farmParam = searchParams.get('farm')
+        const matchedFarm = farmParam ? farmList.find(farm => farm.id === farmParam) : undefined
+
+        setFarms(farmList)
+        setOverview(dashboardOverview)
+        setSelectedFarmId(matchedFarm?.id ?? ALL_FARMS_VALUE)
+      })
+      .catch(() => setError('Could not load your attached farms dashboard.'))
+      .finally(() => setLoading(false))
+  }, [searchParams])
+
+  function handleFarmSelection(nextFarmId: string) {
+    setSelectedFarmId(nextFarmId)
+    setSearchParams({ farm: nextFarmId }, { replace: true })
+  }
+
+  const farmMetaById = useMemo(() => (
+    Object.fromEntries(farms.map(farm => [farm.id, farm]))
+  ), [farms])
+
+  const visibleFarms = (overview?.farms ?? []).filter(farm => (
+    selectedFarmId === ALL_FARMS_VALUE || farm.farmId === selectedFarmId
+  ))
+
+  const visibleAlerts = (overview?.licenseAlerts ?? []).filter(alert => (
+    selectedFarmId === ALL_FARMS_VALUE || alert.farmId === selectedFarmId
+  ))
+
+  const lockedFarmCount = (overview?.farms ?? []).filter(farm => farm.accessLocked).length
+  const expiringSoonCount = (overview?.farms ?? []).filter(farm => {
+    const daysRemaining = farm.daysUntilLicenseExpiry ?? Number.POSITIVE_INFINITY
+    return daysRemaining >= 0 && daysRemaining <= 30
+  }).length
+
+  return (
+    <div style={{ padding: '24px 28px', maxWidth: 1440 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <h1 style={{ color: '#111827', marginBottom: 4 }}>Dashboard</h1>
+          <p style={{ fontSize: 13, color: '#6b7280' }}>
+            Multi-farm overview for your attached farms, license status, and quick drill-down actions
+          </p>
+        </div>
+
+        <select className="input" style={{ width: 240 }} value={selectedFarmId} onChange={event => handleFarmSelection(event.target.value)}>
+          <option value={ALL_FARMS_VALUE}>All attached farms</option>
+          {farms.map(farm => (
+            <option key={farm.id} value={farm.id}>{farm.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {error && (
+        <div style={{ background: '#fff5f5', border: '0.5px solid #fca5a5', borderRadius: 10, padding: '14px 16px', marginBottom: 20, color: '#c53030', fontSize: 13 }}>
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+          {[...Array(4)].map((_, index) => (
+            <div key={index} className="card" style={{ height: 96, background: '#f3f4f6' }} />
+          ))}
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 18 }}>
+            <KpiCard label="Attached farms" value={overview?.farmCount ?? 0} delta="Loaded from your memberships" icon={<FarmIcon />} />
+            <KpiCard label="License alerts" value={visibleAlerts.length} delta={visibleAlerts.length > 0 ? 'Needs attention' : 'No urgent license alerts'} deltaPositive={visibleAlerts.length === 0} color={visibleAlerts.length > 0 ? '#c53030' : undefined} icon={<AlertIcon />} />
+            <KpiCard label="Locked farms" value={lockedFarmCount} delta={lockedFarmCount > 0 ? 'Access is currently restricted' : 'All farm access is open'} deltaPositive={lockedFarmCount === 0} color={lockedFarmCount > 0 ? '#d97706' : undefined} icon={<LockIcon />} />
+            <KpiCard label="Expiring in 30 days" value={expiringSoonCount} delta="License renewal window" color={expiringSoonCount > 0 ? '#d97706' : undefined} icon={<CalendarIcon />} />
+          </div>
+
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="card-title">
+              <span>License alerts</span>
+              <span style={{ fontSize: 11, color: '#9ca3af' }}>{visibleAlerts.length} visible</span>
+            </div>
+            {visibleAlerts.length === 0 ? (
+              <EmptyState message="No active license alerts for the selected farms" positive />
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+                {visibleAlerts.map(alert => (
+                  <LicenseAlertTile
+                    key={`${alert.farmId}:${alert.status}`}
+                    alert={alert}
+                    onOpenFarm={() => navigate(`/dashboard?farm=${alert.farmId}`)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+            {visibleFarms.map(farm => (
+              <FarmOverviewCard
+                key={farm.farmId}
+                farm={farm}
+                meta={farmMetaById[farm.farmId]}
+                onOpenSessions={() => navigate(`/sessions?farm=${farm.farmId}`)}
+                onOpenAnalytics={() => navigate(`/analytics?farm=${farm.farmId}`)}
+              />
+            ))}
+          </div>
+
+          {visibleFarms.length === 0 && (
+            <div className="card" style={{ marginTop: 16 }}>
+              <EmptyState message="No farm cards are available for this filter yet." />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function SuperAdminDashboard() {
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [farms, setFarms] = useState<FarmResponse[]>([])
+  const [selectedFarmId, setSelectedFarmId] = useState(ALL_FARMS_VALUE)
   const [dashboard, setDashboard] = useState<DashboardDto | null>(null)
-  const [allDashboards, setAllDashboards] = useState<DashboardDto[]>([]) // for aggregate view
+  const [allDashboards, setAllDashboards] = useState<DashboardDto[]>([])
   const [sessions, setSessions] = useState<ScoutingSessionDetailDto[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const { week, year } = currentWeek()
-  const isAggregate = selectedId === ALL_FARMS_VALUE
-
-  // ── Load farms ──────────────────────────────────────────────────────────────
   useEffect(() => {
     farmsApi.list()
       .then(data => {
+        const farmParam = searchParams.get('farm')
+        const matchedFarm = farmParam ? data.find(farm => farm.id === farmParam) : undefined
+
         setFarms(data)
-        if (data.length > 0) {
-          const paramId = searchParams.get('farm')
-          if (paramId === ALL_FARMS_VALUE && isSuperAdmin) {
-            setSelectedId(ALL_FARMS_VALUE)
-          } else {
-            const found = paramId ? data.find(f => f.id === paramId) : undefined
-            setSelectedId(found?.id ?? data[0].id)
-          }
-        }
+        setSelectedFarmId(matchedFarm?.id ?? ALL_FARMS_VALUE)
       })
-      .catch(() => setError('Could not load farms. Is the backend running?'))
-      .finally(() => setLoading(false))
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+      .catch(() => setError('Could not load farms.'))
+  }, [searchParams])
 
-  function select(id: string) {
-    setSelectedId(id)
-    setSearchParams({ farm: id }, { replace: true })
-  }
-
-  // ── Load data when selection changes ────────────────────────────────────────
   useEffect(() => {
-    if (!selectedId) return
+    if (farms.length === 0 && selectedFarmId !== ALL_FARMS_VALUE) return
+
     setLoading(true)
     setError(null)
     setDashboard(null)
     setAllDashboards([])
     setSessions([])
 
-    if (isAggregate) {
-      // Fetch all farms in parallel and merge
-      Promise.all(farms.map(f => analyticsApi.fullDashboard(f.id)))
-        .then(results => setAllDashboards(results))
-        .catch(() => setError('Could not load aggregate data.'))
-        .finally(() => setLoading(false))
-    } else {
+    if (selectedFarmId === ALL_FARMS_VALUE) {
       Promise.all([
-        analyticsApi.fullDashboard(selectedId),
-        sessionsApi.list(selectedId),
+        Promise.all(farms.map(farm => analyticsApi.fullDashboard(farm.id))),
+        sessionsApi.list(),
       ])
-        .then(([dash, sess]) => { setDashboard(dash); setSessions(sess) })
-        .catch(() => setError('Could not load dashboard data.'))
+        .then(([dashboards, allSessions]) => {
+          setAllDashboards(dashboards)
+          setSessions(allSessions)
+        })
+        .catch(() => setError('Could not load aggregate dashboard data.'))
         .finally(() => setLoading(false))
+      return
     }
-  }, [selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Aggregate computed values ────────────────────────────────────────────────
-  const agg = isAggregate && allDashboards.length > 0 ? {
-    totalSessions: allDashboards.reduce((s, d) => s + (d.summary?.totalSessions ?? 0), 0),
-    pestsDetected: allDashboards.reduce((s, d) => s + (d.summary?.pestsDetectedThisWeek ?? 0), 0),
-    alerts: allDashboards.flatMap(d => d.alerts ?? []),
-    activeScouts: allDashboards.reduce((s, d) => s + (d.summary?.activeScouts ?? 0), 0),
-    weeklyTrends: mergeWeeklyTrends(allDashboards),
-    pestDistribution: mergePestDistribution(allDashboards),
-    recommendations: allDashboards.flatMap(d => d.recommendations ?? []),
-  } : null
+    Promise.all([
+      analyticsApi.fullDashboard(selectedFarmId),
+      sessionsApi.list(selectedFarmId),
+    ])
+      .then(([farmDashboard, farmSessions]) => {
+        setDashboard(farmDashboard)
+        setSessions(farmSessions)
+      })
+      .catch(() => setError('Could not load farm dashboard data.'))
+      .finally(() => setLoading(false))
+  }, [farms, selectedFarmId])
 
-  // ── Single-farm values ───────────────────────────────────────────────────────
-  const summary = dashboard?.summary
-  const heatmapSections = summary?.currentWeekHeatmap?.[0]?.sections ?? []
-  const alerts = dashboard?.alerts ?? []
-  const weeklyTrends = dashboard?.weeklyTrends ?? []
-  const pestDistribution = dashboard?.pestDistribution ?? []
-  const sevDeltaUp = summary
-    ? summary.averageSeverityThisWeek > summary.averageSeverityLastWeek
-    : false
+  function handleFarmSelection(nextFarmId: string) {
+    setSelectedFarmId(nextFarmId)
+    setSearchParams({ farm: nextFarmId }, { replace: true })
+  }
 
-  const selectedFarmName = farms.find(f => f.id === selectedId)?.name ?? ''
+  const aggregate = useMemo(() => {
+    if (selectedFarmId !== ALL_FARMS_VALUE || allDashboards.length === 0) return null
+
+    return {
+      totalSessions: allDashboards.reduce((sum, item) => sum + (item.summary?.totalSessions ?? 0), 0),
+      pestsDetected: allDashboards.reduce((sum, item) => sum + (item.summary?.pestsDetectedThisWeek ?? 0), 0),
+      activeScouts: allDashboards.reduce((sum, item) => sum + (item.summary?.activeScouts ?? 0), 0),
+      alerts: allDashboards.flatMap((item, index) => (item.alerts ?? []).map(alert => ({
+        ...alert,
+        farmId: farms[index]?.id,
+        farmName: farms[index]?.name ?? alert.farmName,
+      }))),
+      weeklyTrends: mergeWeeklyTrends(allDashboards),
+      pestDistribution: mergePestDistribution(allDashboards),
+      sessions,
+    }
+  }, [allDashboards, farms, selectedFarmId, sessions])
+
+  const selectedFarm = farms.find(farm => farm.id === selectedFarmId) ?? null
+  const singleFarmWeeklyTrends = (dashboard?.weeklyTrends ?? []).map(point => ({
+    ...point,
+    weekLabel: formatTrendWeekLabel(point),
+  }))
 
   return (
-    <div style={{ padding: '24px 28px', maxWidth: 1400 }}>
-
-      {/* Header */}
+    <div style={{ padding: '24px 28px', maxWidth: 1440 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h1 style={{ color: '#111827', marginBottom: 4 }}>Dashboard</h1>
           <p style={{ fontSize: 13, color: '#6b7280' }}>
-            Week {week}, {year} ·{' '}
-            {isAggregate
-              ? `Aggregate view across ${farms.length} farm${farms.length !== 1 ? 's' : ''}`
-              : 'Overview of pest pressure and scouting activity'}
+            Super admin operational view across all farms or one selected farm
           </p>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <select
-            className="input"
-            style={{ width: 220 }}
-            value={selectedId}
-            onChange={e => select(e.target.value)}
-          >
-            {/* Super admin gets an "All farms" option at the top */}
-            {isSuperAdmin && (
-              <option value={ALL_FARMS_VALUE}>🌐 All farms (aggregate)</option>
-            )}
-            {farms.map(f => (
-              <option key={f.id} value={f.id}>{f.name}</option>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select className="input" style={{ width: 240 }} value={selectedFarmId} onChange={event => handleFarmSelection(event.target.value)}>
+            <option value={ALL_FARMS_VALUE}>All farms</option>
+            {farms.map(farm => (
+              <option key={farm.id} value={farm.id}>{farm.name}</option>
             ))}
           </select>
-          {!isAggregate && (
-            <button className="btn-primary" onClick={() => navigate('/heatmap')}>
-              Full heat map
+          {selectedFarmId !== ALL_FARMS_VALUE && (
+            <button className="btn-primary" onClick={() => navigate(`/analytics?farm=${selectedFarmId}`)}>
+              Analytics
             </button>
           )}
         </div>
       </div>
 
-      {/* Error */}
       {error && (
         <div style={{ background: '#fff5f5', border: '0.5px solid #fca5a5', borderRadius: 10, padding: '14px 16px', marginBottom: 20, color: '#c53030', fontSize: 13 }}>
-          {error} — Check that <code style={{ fontSize: 12 }}>http://localhost:8080</code> is reachable.
+          {error}
         </div>
       )}
 
-      {/* Loading shimmer */}
-      {loading && !error && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 20 }}>
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="card" style={{ height: 96, background: '#f3f4f6' }} />
+      {loading ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+          {[...Array(4)].map((_, index) => (
+            <div key={index} className="card" style={{ height: 96, background: '#f3f4f6' }} />
           ))}
         </div>
-      )}
-
-      {/* ── AGGREGATE VIEW (super admin, all farms) ─────────────────────────── */}
-      {!loading && isAggregate && agg && (
+      ) : selectedFarmId === ALL_FARMS_VALUE && aggregate ? (
         <>
-          {/* KPIs */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 20 }}>
-            <KpiCard label="Total sessions" value={agg.totalSessions} delta={`Across ${farms.length} farms`} icon={<SessionIcon />} />
-            <KpiCard label="Pests detected" value={agg.pestsDetected} delta="This week, all farms" icon={<PestIcon />} />
-            <KpiCard
-              label="Active alerts"
-              value={agg.alerts.length}
-              delta={agg.alerts.length > 0 ? 'Requires attention' : 'All clear'}
-              deltaPositive={agg.alerts.length === 0}
-              color={agg.alerts.length > 0 ? '#c53030' : undefined}
-              icon={<AlertIcon />}
-            />
-            <KpiCard label="Active scouts" value={agg.activeScouts} delta="Across all farms" icon={<ScoutIcon />} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 18 }}>
+            <KpiCard label="Tracked farms" value={farms.length} delta="Accessible across the platform" icon={<FarmIcon />} />
+            <KpiCard label="Total sessions" value={aggregate.totalSessions} delta="Across all farms" icon={<SessionIcon />} />
+            <KpiCard label="Pests detected" value={aggregate.pestsDetected} delta="This week" icon={<PestIcon />} />
+            <KpiCard label="Active scouts" value={aggregate.activeScouts} delta="Cross-farm coverage" icon={<ScoutIcon />} />
           </div>
 
-          {/* Per-farm breakdown table */}
-          <div className="card" style={{ marginBottom: 16 }}>
-            <div className="card-title">
-              <span>Per-farm overview</span>
-              <span style={{ fontSize: 11, color: '#9ca3af' }}>{farms.length} farms</span>
-            </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr style={{ borderBottom: '0.5px solid #e5e7eb' }}>
-                  {['Farm', 'Sessions', 'Pests this week', 'Alerts', 'Avg severity', 'Status'].map(h => (
-                    <th key={h} style={{ textAlign: 'left', padding: '5px 10px 8px', fontSize: 10, fontWeight: 500, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {farms.map((farm, i) => {
-                  const d = allDashboards[i]
-                  if (!d) return null
-                  const farmAlerts = d.alerts?.length ?? 0
-                  const avgSev = d.summary?.averageSeverityThisWeek ?? 0
-                  return (
-                    <tr
-                      key={farm.id}
-                      style={{ borderBottom: '0.5px solid #f3f4f6', cursor: 'pointer' }}
-                      onMouseEnter={e => e.currentTarget.style.background = '#f9fafb'}
-                      onMouseLeave={e => e.currentTarget.style.background = ''}
-                      onClick={() => select(farm.id)}
-                    >
-                      <td style={{ padding: '9px 10px' }}>
-                        <p style={{ fontWeight: 500, color: '#111827' }}>{farm.name}</p>
-                        <p style={{ fontSize: 10, color: '#9ca3af' }}>{farm.subscriptionTier}</p>
-                      </td>
-                      <td style={{ padding: '9px 10px', fontFamily: 'DM Mono, monospace' }}>{d.summary?.totalSessions ?? '—'}</td>
-                      <td style={{ padding: '9px 10px', fontFamily: 'DM Mono, monospace' }}>{d.summary?.pestsDetectedThisWeek ?? '—'}</td>
-                      <td style={{ padding: '9px 10px' }}>
-                        {farmAlerts > 0
-                          ? <span className="badge badge-red">{farmAlerts}</span>
-                          : <span style={{ fontSize: 11, color: '#9ca3af' }}>—</span>}
-                      </td>
-                      <td style={{ padding: '9px 10px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <div style={{ width: 48, height: 4, background: '#f3f4f6', borderRadius: 2 }}>
-                            <div style={{
-                              height: '100%', borderRadius: 2,
-                              width: `${Math.min(avgSev * 20, 100)}%`,
-                              background: avgSev >= 4 ? '#e05252' : avgSev >= 2 ? '#f59e0b' : '#71c49a',
-                            }} />
-                          </div>
-                          <span style={{ fontSize: 10, fontFamily: 'DM Mono, monospace', color: '#374151' }}>{avgSev.toFixed(1)}</span>
-                        </div>
-                      </td>
-                      <td style={{ padding: '9px 10px' }}>
-                        <span className={`badge ${farm.subscriptionStatus === 'ACTIVE' ? 'badge-green' : 'badge-gray'}`}>
-                          {farm.subscriptionStatus.replace('_', ' ').toLowerCase()}
-                        </span>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-            <p style={{ fontSize: 11, color: '#9ca3af', marginTop: 10 }}>
-              Click a row to switch to that farm's dashboard
-            </p>
-          </div>
-
-          {/* Aggregate alerts + trends */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 16, marginBottom: 16 }}>
             <div className="card">
-              <div className="card-title">
-                <span>All active alerts</span>
-                <button className="card-action" onClick={() => navigate('/alerts')}>View all →</button>
-              </div>
-              {agg.alerts.length > 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                  {agg.alerts.slice(0, 5).map((a, i) => <AlertCard key={i} alert={a} compact />)}
-                  {agg.alerts.length > 5 && (
-                    <p style={{ fontSize: 11, color: '#9ca3af', textAlign: 'center', paddingTop: 4 }}>
-                      +{agg.alerts.length - 5} more
-                    </p>
-                  )}
-                </div>
+              <div className="card-title">Combined weekly pest trends</div>
+              {aggregate.weeklyTrends.length === 0 ? (
+                <EmptyState message="No cross-farm trend data yet" />
               ) : (
-                <EmptyState message="No active alerts — all clear" positive />
-              )}
-            </div>
-
-            <div className="card">
-              <div className="card-title">
-                <span>Combined weekly pest trends</span>
-                <button className="card-action" onClick={() => navigate('/analytics')}>Analytics →</button>
-              </div>
-              {agg.weeklyTrends.length > 0 ? (
-                <ResponsiveContainer width="100%" height={160}>
-                  <BarChart data={agg.weeklyTrends} margin={{ top: 4, right: 0, left: -28, bottom: 0 }}>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={aggregate.weeklyTrends} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
-                    <XAxis dataKey="week" tick={{ fontSize: 9, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 9, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ fontSize: 11, border: '0.5px solid #e5e7eb', borderRadius: 7 }} cursor={{ fill: '#f9fafb' }} />
-                    <Bar dataKey="thrips"     stackId="a" fill="#e05252" maxBarSize={20} />
-                    <Bar dataKey="redSpider"  stackId="a" fill="#f59e0b" maxBarSize={20} />
-                    <Bar dataKey="whiteflies" stackId="a" fill="#71c49a" radius={[3,3,0,0]} maxBarSize={20} />
+                    <XAxis dataKey="weekLabel" tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
+                    <Tooltip contentStyle={{ fontSize: 11, border: '0.5px solid #e5e7eb', borderRadius: 8 }} />
+                    <Bar dataKey="thrips" stackId="a" fill="#e05252" />
+                    <Bar dataKey="redSpider" stackId="a" fill="#f59e0b" />
+                    <Bar dataKey="whiteflies" stackId="a" fill="#71c49a" />
                   </BarChart>
                 </ResponsiveContainer>
+              )}
+            </div>
+
+            <div className="card">
+              <div className="card-title">
+                <span>Active alerts</span>
+                <span style={{ fontSize: 11, color: '#9ca3af' }}>{aggregate.alerts.length} alerts</span>
+              </div>
+              {aggregate.alerts.length === 0 ? (
+                <EmptyState message="No active alerts across farms" positive />
               ) : (
-                <EmptyState message="No trend data yet" />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {aggregate.alerts.slice(0, 6).map((alert, index) => (
+                    <AlertCard key={index} alert={alert} compact />
+                  ))}
+                </div>
               )}
             </div>
           </div>
 
-          {/* Aggregate pest distribution */}
-          {agg.pestDistribution.length > 0 && (
-            <div className="card">
-              <div className="card-title">Pest distribution — all farms</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {agg.pestDistribution.slice(0, 6).map((p, i) => (
-                  <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: 8, height: 8, borderRadius: 2, background: PEST_CHART_COLORS[i], flexShrink: 0 }} />
-                    <span style={{ fontSize: 12, color: '#374151', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-                    <div style={{ flex: 2, height: 4, background: '#f3f4f6', borderRadius: 2 }}>
-                      <div style={{ height: '100%', background: PEST_CHART_COLORS[i], borderRadius: 2, width: `${p.percentage}%` }} />
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="card-title">
+              <span>Recent sessions</span>
+              <button className="card-action" onClick={() => navigate('/sessions?farm=__all__')}>Open board</button>
+            </div>
+            <SessionsTable sessions={aggregate.sessions} compact showFarm />
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16, marginBottom: 16 }}>
+            {farms.map((farm, index) => {
+              const farmDashboard = allDashboards[index]
+              return (
+                <div key={farm.id} className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                    <div>
+                      <p style={{ fontSize: 14, fontWeight: 600, color: '#111827' }}>{farm.name}</p>
+                      <p style={{ fontSize: 11, color: '#9ca3af' }}>{farm.farmTag}</p>
                     </div>
-                    <span style={{ fontSize: 11, color: '#6b7280', fontFamily: 'DM Mono, monospace', minWidth: 32, textAlign: 'right' }}>{p.value}</span>
+                    <span className={`badge ${farm.accessLocked ? 'badge-orange' : 'badge-green'}`}>
+                      {farm.accessLocked ? 'locked' : 'open'}
+                    </span>
                   </div>
-                ))}
-              </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                    <MiniMetric label="Sessions" value={farmDashboard?.summary?.totalSessions ?? 0} />
+                    <MiniMetric label="Pests" value={farmDashboard?.summary?.pestsDetectedThisWeek ?? 0} />
+                    <MiniMetric label="Alerts" value={farmDashboard?.alerts?.length ?? 0} />
+                  </div>
+                  <button className="btn-secondary" style={{ fontSize: 12 }} onClick={() => handleFarmSelection(farm.id)}>
+                    Open farm dashboard
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+
+          {aggregate.pestDistribution.length > 0 && (
+            <div className="card">
+              <div className="card-title">Pest distribution across all farms</div>
+              <DistributionList items={aggregate.pestDistribution} />
             </div>
           )}
         </>
-      )}
-
-      {/* ── SINGLE FARM VIEW ─────────────────────────────────────────────────── */}
-      {!loading && !isAggregate && (
+      ) : (
         <>
-          {/* KPI Row */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 20 }}>
-            <KpiCard label="Total sessions" value={summary?.totalSessions ?? '—'} delta="This period" icon={<SessionIcon />} />
-            <KpiCard
-              label="Pests detected"
-              value={summary?.pestsDetectedThisWeek ?? '—'}
-              delta={sevDeltaUp ? '↑ pressure rising' : '↓ stable or improving'}
-              deltaPositive={!sevDeltaUp}
-              color={sevDeltaUp ? '#d97706' : undefined}
-              icon={<PestIcon />}
-            />
-            <KpiCard
-              label="Active alerts"
-              value={alerts.filter(a => ['emergency','critical','high'].includes(a.severity.toLowerCase())).length}
-              delta={alerts.length > 0 ? 'Requires attention' : 'All clear'}
-              deltaPositive={alerts.length === 0}
-              color={alerts.length > 0 ? '#c53030' : undefined}
-              icon={<AlertIcon />}
-            />
-            <KpiCard label="Active scouts" value={summary?.activeScouts ?? '—'} delta="Assigned this week" icon={<ScoutIcon />} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 18 }}>
+            <KpiCard label="Farm" value={selectedFarm?.name ?? '-'} delta={selectedFarm?.farmTag ?? 'Selected farm'} icon={<FarmIcon />} />
+            <KpiCard label="Total sessions" value={dashboard?.summary?.totalSessions ?? 0} delta="Current dashboard window" icon={<SessionIcon />} />
+            <KpiCard label="Pests detected" value={dashboard?.summary?.pestsDetectedThisWeek ?? 0} delta="This week" icon={<PestIcon />} />
+            <KpiCard label="Active alerts" value={dashboard?.alerts?.length ?? 0} delta={dashboard?.alerts?.length ? 'Needs attention' : 'All clear'} deltaPositive={(dashboard?.alerts?.length ?? 0) === 0} color={(dashboard?.alerts?.length ?? 0) > 0 ? '#c53030' : undefined} icon={<AlertIcon />} />
           </div>
 
-          {/* Main grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 16, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 16, marginBottom: 16 }}>
             <div className="card">
-              <div className="card-title">
-                <span>Heat map — {selectedFarmName}</span>
-                <button className="card-action" onClick={() => navigate('/heatmap')}>All greenhouses →</button>
-              </div>
-              {heatmapSections.length > 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-                  {heatmapSections.slice(0, 2).map(sec => (
-                    <div key={sec.targetId}>
-                      <p style={{ fontSize: 11, fontWeight: 500, color: '#374151', marginBottom: 8 }}>{sec.targetName}</p>
-                      <HeatmapGrid section={sec} cellSize={22} showLegend={false} />
-                    </div>
-                  ))}
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px 12px' }}>
-                    {[
-                      { label: 'Zero', bg: '#e9f5ee' }, { label: 'Low', bg: '#a7dcbc' },
-                      { label: 'Moderate', bg: '#71c49a' }, { label: 'High', bg: '#f59e0b' },
-                      { label: 'Very high', bg: '#e05252' }, { label: 'Emergency', bg: '#9b1c1c' },
-                    ].map(l => (
-                      <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <div style={{ width: 10, height: 10, borderRadius: 2, background: l.bg, border: '0.5px solid rgba(0,0,0,0.06)' }} />
-                        <span style={{ fontSize: 10, color: '#6b7280' }}>{l.label}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+              <div className="card-title">Weekly trends</div>
+              {singleFarmWeeklyTrends.length === 0 ? (
+                <EmptyState message="No weekly trend data yet" />
               ) : (
-                <EmptyState message="No heat map data for this week" />
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={singleFarmWeeklyTrends} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
+                    <XAxis dataKey="weekLabel" tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
+                    <Tooltip contentStyle={{ fontSize: 11, border: '0.5px solid #e5e7eb', borderRadius: 8 }} />
+                    <Bar dataKey="thrips" stackId="a" fill="#e05252" />
+                    <Bar dataKey="redSpider" stackId="a" fill="#f59e0b" />
+                    <Bar dataKey="whiteflies" stackId="a" fill="#71c49a" />
+                  </BarChart>
+                </ResponsiveContainer>
               )}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div className="card" style={{ flex: 1 }}>
-                <div className="card-title">
-                  <span>Active alerts</span>
-                  <button className="card-action" onClick={() => navigate('/alerts')}>View all</button>
-                </div>
-                {alerts.length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-                    {alerts.slice(0, 4).map((a, i) => <AlertCard key={i} alert={a} compact />)}
-                  </div>
-                ) : (
-                  <EmptyState message="No active alerts — all clear" positive />
-                )}
-              </div>
-
-              <div className="card">
-                <div className="card-title">
-                  <span>Weekly trends</span>
-                  <button className="card-action" onClick={() => navigate('/analytics')}>Analytics →</button>
-                </div>
-                {weeklyTrends.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={110}>
-                    <BarChart data={weeklyTrends} margin={{ top: 4, right: 0, left: -28, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" vertical={false} />
-                      <XAxis dataKey="week" tick={{ fontSize: 9, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 9, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-                      <Tooltip contentStyle={{ fontSize: 11, border: '0.5px solid #e5e7eb', borderRadius: 7 }} cursor={{ fill: '#f9fafb' }} />
-                      <Bar dataKey="thrips"     stackId="a" fill="#e05252" maxBarSize={20} />
-                      <Bar dataKey="redSpider"  stackId="a" fill="#f59e0b" maxBarSize={20} />
-                      <Bar dataKey="whiteflies" stackId="a" fill="#71c49a" radius={[3,3,0,0]} maxBarSize={20} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <EmptyState message="No trend data yet" />
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Bottom row */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-            <div className="card">
-              <div className="card-title"><span>Pest distribution</span></div>
-              {pestDistribution.length > 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {pestDistribution.slice(0, 6).map((p, i) => (
-                    <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div style={{ width: 8, height: 8, borderRadius: 2, background: PEST_CHART_COLORS[i], flexShrink: 0 }} />
-                      <span style={{ fontSize: 12, color: '#374151', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-                      <div style={{ flex: 1.5, height: 4, background: '#f3f4f6', borderRadius: 2 }}>
-                        <div style={{ height: '100%', background: PEST_CHART_COLORS[i], borderRadius: 2, width: `${p.percentage}%` }} />
-                      </div>
-                      <span style={{ fontSize: 11, color: '#6b7280', fontFamily: 'DM Mono, monospace', minWidth: 28, textAlign: 'right' }}>{p.value}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState message="No observation data" />
-              )}
-            </div>
             <div className="card">
               <div className="card-title">
                 <span>Recent sessions</span>
-                <button className="card-action" onClick={() => navigate('/sessions')}>All sessions →</button>
+                <button className="card-action" onClick={() => navigate(`/sessions?farm=${selectedFarmId}`)}>Open board</button>
               </div>
               <SessionsTable sessions={sessions} compact />
             </div>
           </div>
 
-          {/* Recommendations */}
-          {(dashboard?.recommendations ?? []).length > 0 && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div className="card">
-              <div className="card-title">
-                <span>Scout recommendations</span>
-                <span style={{ fontSize: 11, color: '#9ca3af' }}>{dashboard!.recommendations.length} pending</span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {dashboard!.recommendations.slice(0, 5).map((r, i) => {
-                  const priorityColor = r.priority === 'HIGH' ? '#c53030' : r.priority === 'MEDIUM' ? '#d97706' : '#6b7280'
-                  return (
-                    <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: '10px 12px', background: '#f9fafb', borderRadius: 8, border: '0.5px solid #e5e7eb' }}>
-                      <div style={{ width: 3, flexShrink: 0, alignSelf: 'stretch', background: priorityColor, borderRadius: 2 }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, gap: 8 }}>
-                          <span style={{ fontSize: 12, fontWeight: 500, color: '#111827' }}>{r.scout}</span>
-                          <span style={{ fontSize: 10, color: '#9ca3af', whiteSpace: 'nowrap' }}>{r.location}</span>
-                        </div>
-                        <p style={{ fontSize: 12, color: '#374151', lineHeight: 1.5 }}>{r.text}</p>
-                      </div>
-                      <span style={{ fontSize: 10, fontWeight: 500, color: priorityColor, background: priorityColor + '14', border: `0.5px solid ${priorityColor}44`, borderRadius: 20, padding: '2px 7px', whiteSpace: 'nowrap', flexShrink: 0 }}>
-                        {r.priority?.toLowerCase()}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
+              <div className="card-title">Active alerts</div>
+              {(dashboard?.alerts?.length ?? 0) === 0 ? (
+                <EmptyState message="No active alerts for this farm" positive />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {(dashboard?.alerts ?? []).slice(0, 5).map((alert, index) => (
+                    <AlertCard key={index} alert={alert} compact />
+                  ))}
+                </div>
+              )}
             </div>
-          )}
+
+            <div className="card">
+              <div className="card-title">Pest distribution</div>
+              {(dashboard?.pestDistribution?.length ?? 0) === 0 ? (
+                <EmptyState message="No pest distribution data yet" />
+              ) : (
+                <DistributionList items={dashboard?.pestDistribution ?? []} />
+              )}
+            </div>
+          </div>
         </>
       )}
     </div>
   )
 }
 
-// ─── Helpers — merge multi-farm data ─────────────────────────────────────────
+function FarmOverviewCard({
+  farm,
+  meta,
+  onOpenSessions,
+  onOpenAnalytics,
+}: {
+  farm: DashboardOverviewFarmDto
+  meta?: FarmResponse
+  onOpenSessions: () => void
+  onOpenAnalytics: () => void
+}) {
+  const isExpired = (farm.daysUntilLicenseExpiry ?? Number.POSITIVE_INFINITY) < 0
+  const isExpiringSoon = (farm.daysUntilLicenseExpiry ?? Number.POSITIVE_INFINITY) >= 0 && (farm.daysUntilLicenseExpiry ?? Number.POSITIVE_INFINITY) <= 30
+  const licenseTone = isExpired ? '#c53030' : isExpiringSoon ? '#d97706' : '#2d7a50'
+
+  return (
+    <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+            <h2 style={{ fontSize: 15, color: '#111827', margin: 0 }}>{farm.farmName}</h2>
+            <span className="badge badge-gray">{farm.farmTag}</span>
+          </div>
+          <p style={{ fontSize: 12, color: '#6b7280' }}>
+            {meta?.subscriptionTier ?? 'Tier unavailable'} {meta?.structureType ? `· ${meta.structureType.toLowerCase()}` : ''}
+          </p>
+        </div>
+        <span className={`badge ${farm.accessLocked ? 'badge-orange' : 'badge-green'}`}>
+          {farm.accessLocked ? 'Access locked' : 'Access open'}
+        </span>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <MiniMetric label="License expiry" value={farm.licenseExpiryDate ? formatDate(farm.licenseExpiryDate) : 'Not set'} />
+        <MiniMetric
+          label="Days remaining"
+          value={farm.daysUntilLicenseExpiry == null ? '-' : farm.daysUntilLicenseExpiry}
+          color={farm.daysUntilLicenseExpiry == null ? undefined : licenseTone}
+        />
+      </div>
+
+      <div
+        style={{
+          padding: '10px 12px',
+          borderRadius: 8,
+          background: `${licenseTone}12`,
+          border: `0.5px solid ${licenseTone}44`,
+          color: licenseTone,
+          fontSize: 12,
+        }}
+      >
+        {isExpired
+          ? 'License expired. Review the farm before allowing further access.'
+          : isExpiringSoon
+          ? 'License is within the renewal window.'
+          : 'License status is in a healthy range.'}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn-secondary" style={{ fontSize: 12 }} onClick={onOpenSessions}>Sessions</button>
+        <button className="btn-primary" style={{ fontSize: 12 }} onClick={onOpenAnalytics}>Analytics</button>
+      </div>
+    </div>
+  )
+}
+
+function LicenseAlertTile({ alert, onOpenFarm }: { alert: LicenseAlertDto; onOpenFarm: () => void }) {
+  const tone = alert.status.toLowerCase().includes('expired')
+    ? '#c53030'
+    : alert.status.toLowerCase().includes('warning') || alert.status.toLowerCase().includes('grace')
+    ? '#d97706'
+    : '#1e5c3a'
+
+  return (
+    <div style={{ border: `0.5px solid ${tone}44`, borderRadius: 10, background: `${tone}10`, padding: '14px 16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
+        <div>
+          <p style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{alert.farmName}</p>
+          <p style={{ fontSize: 11, color: '#6b7280' }}>{alert.licenseExpiryDate ? formatDate(alert.licenseExpiryDate) : 'No expiry date'}</p>
+        </div>
+        <span style={{ fontSize: 10, fontWeight: 700, color: tone, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+          {alert.status}
+        </span>
+      </div>
+      <p style={{ fontSize: 12, color: tone }}>
+        {typeof alert.daysUntilExpiry === 'number'
+          ? `${alert.daysUntilExpiry} day${Math.abs(alert.daysUntilExpiry) === 1 ? '' : 's'} until expiry`
+          : 'Expiry timeline unavailable'}
+      </p>
+      <button className="btn-secondary" style={{ marginTop: 10, fontSize: 12 }} onClick={onOpenFarm}>
+        Open farm
+      </button>
+    </div>
+  )
+}
+
+function DistributionList({ items }: { items: PestDistributionItemDto[] }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {items.slice(0, 6).map((item, index) => (
+        <div key={item.name} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 8, height: 8, borderRadius: 2, background: PEST_CHART_COLORS[index % PEST_CHART_COLORS.length], flexShrink: 0 }} />
+          <span style={{ fontSize: 12, color: '#374151', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</span>
+          <div style={{ flex: 1.5, height: 4, background: '#f3f4f6', borderRadius: 2 }}>
+            <div style={{ height: '100%', background: PEST_CHART_COLORS[index % PEST_CHART_COLORS.length], borderRadius: 2, width: `${item.percentage}%` }} />
+          </div>
+          <span style={{ fontSize: 11, color: '#6b7280', fontFamily: 'DM Mono, monospace', minWidth: 28, textAlign: 'right' }}>{getDistributionCount(item)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function MiniMetric({ label, value, color }: { label: string; value: string | number; color?: string }) {
+  return (
+    <div style={{ padding: '10px 12px', borderRadius: 8, background: '#f9fafb', border: '0.5px solid #e5e7eb' }}>
+      <p style={{ fontSize: 10, color: '#9ca3af', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</p>
+      <p style={{ fontSize: 15, fontWeight: 600, color: color ?? '#111827' }}>{value}</p>
+    </div>
+  )
+}
 
 function mergeWeeklyTrends(dashboards: DashboardDto[]) {
   const map = new Map<string, Record<string, number | string>>()
-  dashboards.forEach(d => {
-    (d.weeklyTrends ?? []).forEach(wt => {
-      const existing = map.get(wt.week) ?? {}
-      map.set(wt.week, {
-        week: wt.week,
-        thrips:      ((existing.thrips      as number) ?? 0) + (wt.thrips      ?? 0),
-        redSpider:   ((existing.redSpider   as number) ?? 0) + (wt.redSpider   ?? 0),
-        whiteflies:  ((existing.whiteflies  as number) ?? 0) + (wt.whiteflies  ?? 0),
-        mealybugs:   ((existing.mealybugs   as number) ?? 0) + (wt.mealybugs   ?? 0),
-        caterpillars:((existing.caterpillars as number)?? 0) + (wt.caterpillars?? 0),
-        otherPests:  ((existing.otherPests  as number) ?? 0) + (wt.otherPests  ?? 0),
+
+  dashboards.forEach(dashboard => {
+    ;(dashboard.weeklyTrends ?? []).forEach(point => {
+      const weekKey = point.weekKey ?? point.week
+      const existing = map.get(weekKey) ?? {}
+
+      map.set(weekKey, {
+        weekLabel: formatTrendWeekLabel(point),
+        sortKey: weekKey,
+        thrips: ((existing.thrips as number) ?? 0) + (point.thrips ?? 0),
+        redSpider: ((existing.redSpider as number) ?? 0) + (point.redSpider ?? 0),
+        whiteflies: ((existing.whiteflies as number) ?? 0) + (point.whiteflies ?? 0),
+        mealybugs: ((existing.mealybugs as number) ?? 0) + (point.mealybugs ?? 0),
+        caterpillars: ((existing.caterpillars as number) ?? 0) + (point.caterpillars ?? 0),
+        otherPests: ((existing.otherPests as number) ?? 0) + (point.otherPests ?? 0),
       })
     })
   })
-  return Array.from(map.values()).sort((a, b) => String(a.week).localeCompare(String(b.week)))
+
+  return Array.from(map.values()).sort((a, b) => String(a.sortKey).localeCompare(String(b.sortKey)))
 }
 
 function mergePestDistribution(dashboards: DashboardDto[]) {
   const map = new Map<string, number>()
-  dashboards.forEach(d => {
-    (d.pestDistribution ?? []).forEach(p => {
-      map.set(p.name, (map.get(p.name) ?? 0) + p.value)
+
+  dashboards.forEach(dashboard => {
+    ;(dashboard.pestDistribution ?? []).forEach(item => {
+      map.set(item.name, (map.get(item.name) ?? 0) + getDistributionCount(item))
     })
   })
-  const total = Array.from(map.values()).reduce((s, v) => s + v, 0)
+
+  const total = Array.from(map.values()).reduce((sum, value) => sum + value, 0)
+
   return Array.from(map.entries())
     .sort((a, b) => b[1] - a[1])
-    .map(([name, value]) => ({ name, value, percentage: total > 0 ? (value / total) * 100 : 0, severity: '' }))
+    .map(([name, value]) => ({
+      name,
+      value,
+      count: value,
+      percentage: total > 0 ? (value / total) * 100 : 0,
+      severity: '',
+    }))
 }
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
 
 function EmptyState({ message, positive = false }: { message: string; positive?: boolean }) {
   return (
     <div style={{ padding: '20px 0', textAlign: 'center', color: positive ? '#2d7a50' : '#9ca3af', fontSize: 12 }}>
-      {positive ? '✓ ' : ''}{message}
+      {positive ? 'OK ' : ''}{message}
     </div>
   )
 }
 
 function SessionIcon() {
-  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><rect x="1" y="2" width="12" height="10" rx="2"/><line x1="4" y1="6" x2="10" y2="6"/><line x1="4" y1="8.5" x2="8" y2="8.5"/></svg>
+  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><rect x="1" y="2" width="12" height="10" rx="2" /><line x1="4" y1="6" x2="10" y2="6" /><line x1="4" y1="8.5" x2="8" y2="8.5" /></svg>
 }
+
 function PestIcon() {
-  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><circle cx="7" cy="7" r="3"/><line x1="7" y1="1" x2="7" y2="4"/><line x1="7" y1="10" x2="7" y2="13"/><line x1="1" y1="7" x2="4" y2="7"/><line x1="10" y1="7" x2="13" y2="7"/></svg>
+  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><circle cx="7" cy="7" r="3" /><line x1="7" y1="1" x2="7" y2="4" /><line x1="7" y1="10" x2="7" y2="13" /><line x1="1" y1="7" x2="4" y2="7" /><line x1="10" y1="7" x2="13" y2="7" /></svg>
 }
+
 function AlertIcon() {
-  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 1L13 12H1L7 1z"/><line x1="7" y1="5" x2="7" y2="8"/><circle cx="7" cy="10" r="0.6" fill="currentColor" stroke="none"/></svg>
+  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 1L13 12H1L7 1z" /><line x1="7" y1="5" x2="7" y2="8" /><circle cx="7" cy="10" r="0.6" fill="currentColor" stroke="none" /></svg>
 }
+
 function ScoutIcon() {
-  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><circle cx="7" cy="4.5" r="2.5"/><path d="M1.5 13c0-3 2.5-4.5 5.5-4.5s5.5 1.5 5.5 4.5"/></svg>
+  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><circle cx="7" cy="4.5" r="2.5" /><path d="M1.5 13c0-3 2.5-4.5 5.5-4.5s5.5 1.5 5.5 4.5" /></svg>
+}
+
+function FarmIcon() {
+  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12V6.5L7 2.5l5 4V12" /><path d="M5 12V8h4v4" /></svg>
+}
+
+function LockIcon() {
+  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><rect x="2.5" y="6" width="9" height="6" rx="1.5" /><path d="M4.5 6V4.5a2.5 2.5 0 0 1 5 0V6" /></svg>
+}
+
+function CalendarIcon() {
+  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><rect x="1.5" y="2.5" width="11" height="10" rx="1.5" /><path d="M4 1.5v2" /><path d="M10 1.5v2" /><path d="M1.5 5h11" /></svg>
 }

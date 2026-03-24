@@ -6,15 +6,15 @@ import { getClientSessionId, hasClientSessionId } from '@/utils/clientSession'
 import { getSharedRefreshToken, getStoredRefreshToken } from '@/utils/authStorage'
 
 export function useSessionBootstrap() {
-  const {
-    user,
-    token,
-    refreshToken,
-    completeAuth,
-    refreshSession,
-    updateUser,
-  } = useAuthStore()
-  const [ready, setReady] = useState(false)
+  const { token, completeAuth, refreshSession, updateUser } = useAuthStore()
+
+  // Start as ready immediately when we already have a fresh, valid session so
+  // there is no "Restoring session…" flicker on a normal reload.
+  const [ready, setReady] = useState(() => {
+    const { token, user, tokenExpiresAt } = useAuthStore.getState()
+    return !!(token && user && tokenExpiresAt != null && Date.now() < tokenExpiresAt)
+  })
+
   const initialHadTabId = useRef(hasClientSessionId())
   const claimAttempted = useRef(false)
   const clientSessionId = getClientSessionId()
@@ -24,20 +24,30 @@ export function useSessionBootstrap() {
 
     async function bootstrap() {
       try {
+        // Always read live state — avoids stale-closure bugs with empty dep array.
+        const { token, tokenExpiresAt, refreshToken } = useAuthStore.getState()
+
         if (!initialHadTabId.current && !claimAttempted.current) {
           const sharedRefreshToken = getSharedRefreshToken()
           if (sharedRefreshToken) {
             claimAttempted.current = true
             await completeAuth(await authApi.claimSession(sharedRefreshToken))
           }
-        } else if (!token) {
-          const storedRefreshToken = refreshToken ?? getStoredRefreshToken()
-          if (storedRefreshToken) {
-            await refreshSession(storedRefreshToken)
+        } else {
+          const isExpired = !token || (tokenExpiresAt != null && Date.now() >= tokenExpiresAt)
+          if (isExpired) {
+            const storedRefreshToken = refreshToken ?? getStoredRefreshToken()
+            if (storedRefreshToken) {
+              await refreshSession(storedRefreshToken)
+            } else {
+              if (!cancelled) forceLogout('session_expired')
+              return
+            }
           }
         }
 
-        if (!user && useAuthStore.getState().token) {
+        const state = useAuthStore.getState()
+        if (!state.user && state.token) {
           updateUser(await authApi.me())
         }
 
@@ -57,7 +67,7 @@ export function useSessionBootstrap() {
     return () => {
       cancelled = true
     }
-  }, [completeAuth, refreshSession, refreshToken, token, updateUser, user])
+  }, [])
 
   useEffect(() => {
     if (!ready || !token) {

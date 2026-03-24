@@ -1,13 +1,14 @@
 import { useNavigate } from 'react-router-dom'
 import type { ScoutingSessionDetailDto } from '@/types'
-import { SESSION_STATUS_BADGE, formatDate } from '@/utils'
+import { SESSION_STATUS_BADGE, formatDate, formatSessionWeekLabel } from '@/utils'
 
 interface SessionsTableProps {
   sessions: ScoutingSessionDetailDto[]
   compact?: boolean
+  showFarm?: boolean
 }
 
-export default function SessionsTable({ sessions, compact = false }: SessionsTableProps) {
+export default function SessionsTable({ sessions, compact = false, showFarm = false }: SessionsTableProps) {
   const navigate = useNavigate()
 
   if (sessions.length === 0) {
@@ -23,6 +24,7 @@ export default function SessionsTable({ sessions, compact = false }: SessionsTab
       <thead>
         <tr style={{ borderBottom: '0.5px solid #e5e7eb' }}>
           <th style={thStyle}>Session</th>
+          {showFarm && <th style={thStyle}>Farm</th>}
           <th style={thStyle}>Date</th>
           {!compact && <th style={thStyle}>Observations</th>}
           <th style={thStyle}>Status</th>
@@ -34,17 +36,23 @@ export default function SessionsTable({ sessions, compact = false }: SessionsTab
           const totalObs = s.sections.reduce(
             (acc, sec) => acc + sec.observations.filter(o => !o.deleted).length, 0
           )
+          const isBlocked = !!s.openRestricted
 
           return (
             <tr
               key={s.id}
-              onClick={() => navigate(`/sessions/${s.id}`)}
+              onClick={() => {
+                if (!isBlocked) navigate(`/sessions/${s.id}`)
+              }}
               style={{
                 borderBottom: '0.5px solid #f3f4f6',
-                cursor: 'pointer',
+                cursor: isBlocked ? 'default' : 'pointer',
+                opacity: isBlocked ? 0.45 : 1,
                 transition: 'background 0.1s',
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#f9fafb')}
+              onMouseEnter={e => {
+                if (!isBlocked) e.currentTarget.style.background = '#f9fafb'
+              }}
               onMouseLeave={e => (e.currentTarget.style.background = '')}
             >
               <td style={tdStyle}>
@@ -62,7 +70,7 @@ export default function SessionsTable({ sessions, compact = false }: SessionsTab
                   </div>
                   <div>
                     <p style={{ fontWeight: 500, color: '#111827' }}>
-                      {s.crop ?? 'Session'} · W{s.weekNumber}
+                      {s.crop ?? 'Session'} · {formatSessionWeekLabel(s)}
                     </p>
                     <p style={{ fontSize: 10, color: '#9ca3af', marginTop: 1 }}>
                       {s.id.slice(0, 8)}
@@ -70,6 +78,11 @@ export default function SessionsTable({ sessions, compact = false }: SessionsTab
                   </div>
                 </div>
               </td>
+              {showFarm && (
+                <td style={tdStyle}>
+                  <span style={{ color: '#374151' }}>{s.farmName ?? '-'}</span>
+                </td>
+              )}
               <td style={tdStyle}>
                 <span style={{ color: '#374151' }}>{formatDate(s.sessionDate)}</span>
               </td>
@@ -81,7 +94,10 @@ export default function SessionsTable({ sessions, compact = false }: SessionsTab
                 </td>
               )}
               <td style={tdStyle}>
-                <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                  {isBlocked && <span className="badge badge-gray">Restricted</span>}
+                </div>
               </td>
             </tr>
           )

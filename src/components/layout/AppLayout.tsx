@@ -113,7 +113,7 @@ export default function AppLayout() {
           </div>
         )}
 
-        <main style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+        <main style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 40 }}>
           <Outlet />
         </main>
       </div>

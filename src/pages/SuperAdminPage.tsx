@@ -168,12 +168,17 @@ function FarmsTab() {
 
     setMemberSaving(true)
     try {
-      await adminUsersApi.update(selectedMemberId, { farmId: selectedFarm.id })
+      const selectedCandidate = memberCandidates.find(candidate => candidate.id === selectedMemberId)
+      if (selectedCandidate?.role === 'MANAGER' || selectedCandidate?.role === 'FARM_ADMIN') {
+        await adminFarmsApi.addMember(selectedFarm.id, selectedMemberId)
+      } else {
+        await adminUsersApi.update(selectedMemberId, { farmId: selectedFarm.id })
+      }
       const updatedMembers = await adminFarmsApi.listMembers(selectedFarm.id)
       setMembers(updatedMembers)
       setSelectedMemberId('')
       setMemberSearch('')
-      flash('User assigned to farm')
+      flash(selectedCandidate?.role === 'SCOUT' ? 'Scout assigned to farm' : 'User added to farm membership')
     } catch (e: any) {
       flash(e?.response?.data?.message ?? 'Failed to assign user to farm', true)
     } finally {
@@ -520,7 +525,7 @@ function FarmsTab() {
                     Add existing person
                   </div>
                   <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 10 }}>
-                    Assign an existing user to this farm without changing their current role. If they already belong to another farm, they will be moved here.
+                    Assign an existing user to this farm without changing their current role. Managers and farm admins keep existing farms; scouts move to this farm.
                   </div>
                   <input
                     className="input"
@@ -570,7 +575,7 @@ function FarmsTab() {
                               {[user.firstName, user.lastName].filter(Boolean).join(' ') || user.email}
                             </div>
                             <div style={{ fontSize: 11, color: '#6b7280' }}>
-                              {user.email} · {String(user.role).replace(/_/g, ' ')} · {user.farmId ? `Currently ${farms.find(farm => farm.id === user.farmId)?.name ?? 'assigned elsewhere'}` : 'Unassigned'}
+                              {user.email} · {String(user.role).replace(/_/g, ' ')}
                             </div>
                           </div>
                         </label>
