@@ -36,6 +36,14 @@ function actorLabel(user: { firstName?: string; lastName?: string; email?: strin
   return [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email || 'Unknown'
 }
 
+function isAssignableScout(user: UserDto) {
+  return user.role === 'SCOUT' && user.isEnabled && user.active && !user.deleted
+}
+
+function dedupeUsers(users: UserDto[]) {
+  return Array.from(new Map(users.map(item => [item.id, item])).values())
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SessionDetailPage() {
@@ -179,8 +187,55 @@ export default function SessionDetailPage() {
   // Load scouts list for planner form (managers only)
   useEffect(() => {
     if (!session || !isManager || !['DRAFT', 'NEW'].includes(session.status)) return
-    adminUsersApi.listScouts(session.farmId).then(setScouts).catch(() => setScouts([]))
-  }, [session?.status, session?.farmId, isManager])
+
+    let alive = true
+
+    Promise.all([
+      adminUsersApi.listScouts(session.farmId).catch(() => [] as UserDto[]),
+      role === 'SUPER_ADMIN'
+        ? adminUsersApi.list({ role: 'SCOUT' }).catch(() => [] as UserDto[])
+        : Promise.resolve([] as UserDto[]),
+      session.scoutId
+        ? adminUsersApi.get(session.scoutId).catch(() => null)
+        : Promise.resolve(null),
+    ])
+      .then(([farmScopedScouts, allScouts, assignedScout]) => {
+        if (!alive) return
+
+        const assignableFarmScouts = dedupeUsers(farmScopedScouts.filter(isAssignableScout))
+        if (assignableFarmScouts.length > 0) {
+          const merged = assignedScout && isAssignableScout(assignedScout)
+            ? dedupeUsers([...assignableFarmScouts, assignedScout])
+            : assignableFarmScouts
+          setScouts(merged)
+          return
+        }
+
+        if (role === 'SUPER_ADMIN') {
+          const fallbackScouts = dedupeUsers(allScouts.filter(isAssignableScout))
+          const merged = assignedScout && isAssignableScout(assignedScout)
+            ? dedupeUsers([...fallbackScouts, assignedScout])
+            : fallbackScouts
+          setScouts(merged)
+          return
+        }
+
+        if (assignedScout && isAssignableScout(assignedScout)) {
+          setScouts([assignedScout])
+          return
+        }
+
+        setScouts([])
+      })
+      .catch(() => {
+        if (!alive) return
+        setScouts([])
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [session?.status, session?.farmId, session?.scoutId, isManager, role])
 
   useEffect(() => {
     if (!session || !isManager || !['DRAFT', 'NEW'].includes(session.status)) return
@@ -214,6 +269,37 @@ export default function SessionDetailPage() {
   function flash(msg: string, type: 'success' | 'error' = 'success') {
     setBanner({ type, msg })
     setTimeout(() => setBanner(null), 4000)
+  }
+
+  async function reloadSessionState() {
+    if (!sessionId) {
+      throw new Error('Session not found')
+    }
+
+    const latestSession = await sessionsApi.get(sessionId)
+    setSession(latestSession)
+    return latestSession
+  }
+
+  async function updateSessionWithRetry(
+    buildBody: (baseSession: ScoutingSessionDetailDto) => Record<string, unknown>,
+  ) {
+    if (!sessionId || !session) return null
+
+    try {
+      const updatedSession = await sessionsApi.update(sessionId, buildBody(session))
+      setSession(updatedSession)
+      return updatedSession
+    } catch (error: any) {
+      if (error?.response?.status !== 409) {
+        throw error
+      }
+
+      const latestSession = await reloadSessionState()
+      const retriedSession = await sessionsApi.update(sessionId, buildBody(latestSession))
+      setSession(retriedSession)
+      return retriedSession
+    }
   }
 
   // ── Actions ──────────────────────────────────────────────────────────────
@@ -302,34 +388,38 @@ export default function SessionDetailPage() {
     setDraftSaving(true)
     try {
       const previousStatus = session.status
-      const updated = await sessionsApi.update(sessionId, {
-        scoutId:     draftScoutId || undefined,
-        sessionDate: draftDate,
-        weekNumber:  draftWeek,
-        crop:        draftCrop    || undefined,
-        variety:     draftVariety || undefined,
-        surveySpeciesCodes: surveySpeciesCodes.length > 0 ? surveySpeciesCodes : undefined,
-        customSurveySpeciesIds: customSurveySpeciesIds.length > 0 ? customSurveySpeciesIds : undefined,
-        targets: plannerTargets.map(target => ({
-          ...(target.structureType === 'FIELD'
-            ? {
-                fieldBlockId: target.structureId,
-                areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
-              }
-            : {
-                greenhouseId: target.structureId,
-                includeAllBays: target.includeAllBays,
-                includeAllBenches: target.includeAllBenches,
-                bayTags: target.includeAllBays ? [] : target.bayTags,
-                benchTags: target.includeAllBenches ? [] : target.benchTags,
-                areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
-              }),
-        })),
-        notes:       buildSessionNotesValue(draftNotes, parsedSessionNotes.metadata),
-        version:     session.version,
-        actorName:   myName,
+      const updated = await updateSessionWithRetry(baseSession => {
+        const baseParsedNotes = parseSessionNotesValue(baseSession.notes)
+
+        return {
+          scoutId: draftScoutId || undefined,
+          sessionDate: draftDate,
+          weekNumber: draftWeek,
+          crop: draftCrop || undefined,
+          variety: draftVariety || undefined,
+          surveySpeciesCodes: surveySpeciesCodes.length > 0 ? surveySpeciesCodes : undefined,
+          customSurveySpeciesIds: customSurveySpeciesIds.length > 0 ? customSurveySpeciesIds : undefined,
+          targets: plannerTargets.map(target => ({
+            ...(target.structureType === 'FIELD'
+              ? {
+                  fieldBlockId: target.structureId,
+                  areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
+                }
+              : {
+                  greenhouseId: target.structureId,
+                  includeAllBays: target.includeAllBays,
+                  includeAllBenches: target.includeAllBenches,
+                  bayTags: target.includeAllBays ? [] : target.bayTags,
+                  benchTags: target.includeAllBenches ? [] : target.benchTags,
+                  areaHectares: target.areaHectares === '' ? undefined : Number(target.areaHectares),
+                }),
+          })),
+          notes: buildSessionNotesValue(draftNotes, baseParsedNotes.metadata),
+          version: baseSession.version,
+          actorName: myName,
+        }
       })
-      setSession(updated)
+      if (!updated) return
       setPlannerEditing(false)
       if (previousStatus === 'DRAFT' && updated.status === 'NEW') {
         navigate('/sessions', { replace: true })
@@ -345,16 +435,16 @@ export default function SessionDetailPage() {
     if (!sessionId || !session) return
     setWeatherSaving(true)
     try {
-      const updated = await sessionsApi.update(sessionId, {
+      const updated = await updateSessionWithRetry(baseSession => ({
         temperatureCelsius: weatherTemp === '' ? undefined : Number(weatherTemp),
         relativeHumidityPercent: weatherRh === '' ? undefined : Number(weatherRh),
         observationTime: weatherTime || undefined,
         observationTimezone: weatherTimezone.trim() || undefined,
         weatherNotes: weatherNotes || undefined,
-        version: session.version,
+        version: baseSession.version,
         actorName: myName,
-      })
-      setSession(updated)
+      }))
+      if (!updated) return
       flash('Weather values saved')
     } catch (e: any) {
       flash(e?.response?.data?.message ?? 'Failed to save weather values', 'error')
@@ -641,7 +731,7 @@ export default function SessionDetailPage() {
                 <input
                   className="input"
                   disabled
-                  value={draftScoutId ? `Assigned scout ${draftScoutId.slice(0, 8)}` : 'No scout assigned'}
+                  value={draftScoutId ? (assignedScoutName || 'Assigned scout') : 'No scout assigned'}
                 />
               ) : (
                 <select className="input" value={draftScoutId} disabled={plannerReadOnly} onChange={e => setDraftScoutId(e.target.value)}>
@@ -959,9 +1049,7 @@ export default function SessionDetailPage() {
               }}
               section={section}
               sessionId={sessionId!}
-              sessionVersion={session.version}
               sessionNotes={session.notes}
-              actorName={myName}
               isEditable={canEditObservations}
               canEditNotes={canEditObservationNotes}
               farmId={session.farmId}

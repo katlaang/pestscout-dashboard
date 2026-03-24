@@ -29,7 +29,6 @@ import type {
 import { mergeCustomSpecies } from '@/utils/customSpecies'
 import {
   buildRowRemarkKey,
-  buildSessionNotesValue,
   countWords,
   limitWords,
   parseSessionNotesValue,
@@ -117,6 +116,31 @@ function parseCountValue(value: string): number | null {
   const parsed = Number.parseInt(trimmed, 10)
   if (Number.isNaN(parsed) || parsed < 0) return null
   return parsed
+}
+
+function buildObservationUpdateBody(
+  observation: ScoutingObservationDto,
+  notes: string | undefined,
+): UpdateObservationRequest {
+  return {
+    sessionTargetId: observation.sessionTargetId,
+    greenhouseId: observation.greenhouseId,
+    fieldBlockId: observation.fieldBlockId,
+    ...(observation.customSpeciesId
+      ? { customSpeciesId: observation.customSpeciesId }
+      : observation.speciesCode
+      ? { speciesCode: observation.speciesCode }
+      : {}),
+    category: observation.category,
+    bayIndex: observation.bayIndex,
+    bayTag: observation.bayTag,
+    benchIndex: observation.benchIndex,
+    benchTag: observation.benchTag,
+    spotIndex: observation.spotIndex,
+    count: observation.count,
+    notes,
+    version: observation.version,
+  }
 }
 
 function supportsObservationPhotos(column: GridColumn) {
@@ -418,9 +442,7 @@ async function uploadRegisteredPhoto(file: File, registered: RegisterScoutingPho
 interface ObservationGridProps {
   section: ScoutingSessionSectionDto
   sessionId: string
-  sessionVersion: number
   sessionNotes?: string
-  actorName: string
   isEditable: boolean
   canEditNotes?: boolean
   farmId: string
@@ -436,9 +458,7 @@ export interface ObservationGridHandle {
 const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(function ObservationGrid({
   section,
   sessionId,
-  sessionVersion,
   sessionNotes,
-  actorName,
   isEditable,
   canEditNotes: canEditNotesProp,
   farmId,
@@ -715,7 +735,7 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     })
 
     Object.entries(parsedSessionNotes.metadata.rowRemarks).forEach(([key, remark]) => {
-      if (remark.trim()) {
+      if (remark.trim() && !remarks[key]) {
         remarks[key] = remark
       }
     })
@@ -749,6 +769,60 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
     })
     return map
   }, [rows, visibleColumns])
+
+  function mergeObservationsIntoMap(observations: ScoutingObservationDto[]) {
+    if (observations.length === 0) return
+
+    setObsMap(previous => {
+      const next = { ...previous }
+
+      observations.forEach(observation => {
+        const key = obsKey(observation.bayIndex, observation.benchIndex, columnKeyForObservation(observation))
+        next[key] = observation
+      })
+
+      return next
+    })
+  }
+
+  function getRowObservationsFromSession(
+    latestSession: ScoutingSessionDetailDto,
+    row: Pick<ActiveRemarkRowState, 'bayIndex' | 'benchIndex'>,
+  ) {
+    const latestSection = latestSession.sections.find(item => item.targetId === section.targetId)
+    if (!latestSection) return [] as ScoutingObservationDto[]
+
+    return latestSection.observations.filter(observation =>
+      !observation.deleted &&
+      observation.bayIndex === row.bayIndex &&
+      observation.benchIndex === row.benchIndex,
+    )
+  }
+
+  async function reloadLatestSessionState() {
+    const latestSession = await sessionsApi.get(sessionId)
+    onSessionUpdated?.(latestSession)
+    return latestSession
+  }
+
+  async function saveRowRemarkToObservations(
+    observations: ScoutingObservationDto[],
+    notes: string | undefined,
+  ) {
+    const updatedObservations: ScoutingObservationDto[] = []
+
+    for (const observation of observations) {
+      updatedObservations.push(
+        await observationsApi.update(
+          sessionId,
+          observation.id,
+          buildObservationUpdateBody(observation, notes),
+        ),
+      )
+    }
+
+    return updatedObservations
+  }
 
   function setPendingPhotosForKey(key: string, updater: (previous: PendingCellPhoto[]) => PendingCellPhoto[]) {
     setPendingPhotoMap(previous => {
@@ -950,23 +1024,32 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
       : previous)
 
     try {
-      const nextRowRemarks = { ...parsedSessionNotes.metadata.rowRemarks }
-      if (trimmedNotes) {
-        nextRowRemarks[current.key] = trimmedNotes
-      } else {
-        delete nextRowRemarks[current.key]
+      let rowObservations = rowObservationsByKey[current.key] ?? []
+
+      if (rowObservations.length === 0) {
+        throw new Error('Save at least one count in this row before adding row remarks.')
       }
 
-      const updatedSession = await sessionsApi.update(sessionId, {
-        notes: buildSessionNotesValue(parsedSessionNotes.plainNotes, {
-          ...parsedSessionNotes.metadata,
-          rowRemarks: nextRowRemarks,
-        }),
-        version: sessionVersion,
-        actorName,
-      })
+      try {
+        const savedObservations = await saveRowRemarkToObservations(rowObservations, trimmedNotes || undefined)
+        mergeObservationsIntoMap(savedObservations)
+      } catch (error: any) {
+        if (error?.response?.status !== 409) {
+          throw error
+        }
 
-      onSessionUpdated?.(updatedSession)
+        const latestSession = await reloadLatestSessionState()
+        rowObservations = getRowObservationsFromSession(latestSession, current)
+
+        if (rowObservations.length === 0) {
+          throw new Error('This row changed on the server. Add a saved count in this row, then try the remark again.')
+        }
+
+        const savedObservations = await saveRowRemarkToObservations(rowObservations, trimmedNotes || undefined)
+        mergeObservationsIntoMap(savedObservations)
+      }
+
+      await reloadLatestSessionState()
       setActiveRemarkRow(null)
     } catch (error: any) {
       setActiveRemarkRow(previous => previous && previous.key === current.key
@@ -1995,8 +2078,8 @@ const ObservationGrid = forwardRef<ObservationGridHandle, ObservationGridProps>(
             </div>
 
             {(rowObservationsByKey[activeRemarkRow.key] ?? []).length === 0 && (
-              <div style={{ fontSize: 12, color: '#9ca3af' }}>
-                This row does not need a saved count anymore. Remarks save directly to the session.
+            <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                Save at least one count in this row before adding row remarks.
               </div>
             )}
 

@@ -244,6 +244,28 @@ const SessionRemarkPhotos = forwardRef<SessionRemarkPhotosHandle, SessionRemarkP
     return ordered
   }, [issues, pendingPhotosByIssue, savedPhotosByIssue])
 
+  async function reloadLatestSessionState() {
+    const latestSession = await sessionsApi.get(session.id)
+    onSessionUpdated(latestSession)
+    return latestSession
+  }
+
+  async function saveIssuesForSession(
+    baseSession: ScoutingSessionDetailDto,
+    nextIssues: SessionHotspotIssue[],
+  ) {
+    const baseNotes = parseSessionNotesValue(baseSession.notes)
+
+    return sessionsApi.update(baseSession.id, {
+      notes: buildSessionNotesValue(baseNotes.plainNotes, {
+        ...baseNotes.metadata,
+        hotspotIssues: nextIssues,
+      }),
+      version: baseSession.version,
+      actorName,
+    })
+  }
+
   function setIssueField(issueId: string, field: keyof SessionHotspotIssue, value: string) {
     setIssues(previous => {
       const now = new Date().toISOString()
@@ -329,14 +351,18 @@ const SessionRemarkPhotos = forwardRef<SessionRemarkPhotosHandle, SessionRemarkP
             return issue.title || issue.location || issue.note || hasPhotos
           })
 
-        const updatedSession = await sessionsApi.update(session.id, {
-          notes: buildSessionNotesValue(parsedNotes.plainNotes, {
-            ...parsedNotes.metadata,
-            hotspotIssues: nextIssues,
-          }),
-          version: session.version,
-          actorName,
-        })
+        let updatedSession: ScoutingSessionDetailDto
+
+        try {
+          updatedSession = await saveIssuesForSession(session, nextIssues)
+        } catch (saveError: any) {
+          if (saveError?.response?.status !== 409) {
+            throw saveError
+          }
+
+          const latestSession = await reloadLatestSessionState()
+          updatedSession = await saveIssuesForSession(latestSession, nextIssues)
+        }
 
         setIssues(nextIssues)
         setIssuesDirty(false)

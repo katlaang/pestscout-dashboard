@@ -160,15 +160,12 @@ export function buildSessionNotesValue(
   const normalizedPlainNotes = parseSessionNotesValue(plainNotes).plainNotes
   const normalizedMetadata: StoredSessionInteractionMetadata = {
     version: 1,
-    rowRemarks: normalizeRowRemarks(metadata.rowRemarks),
     hotspotIssues: metadata.hotspotIssues
       .map(issue => normalizeHotspotIssue(issue as unknown as Record<string, unknown>))
       .filter((issue): issue is SessionHotspotIssue => !!issue),
   }
 
-  const hasMetadata =
-    Object.keys(normalizedMetadata.rowRemarks ?? {}).length > 0 ||
-    (normalizedMetadata.hotspotIssues?.length ?? 0) > 0
+  const hasMetadata = (normalizedMetadata.hotspotIssues?.length ?? 0) > 0
 
   if (!normalizedPlainNotes && !hasMetadata) {
     return undefined

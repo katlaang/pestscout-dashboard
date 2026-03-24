@@ -660,7 +660,6 @@ function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
     address: farm.address ?? '', timezone: farm.timezone ?? '',
     contactName: farm.contactName ?? '', contactEmail: farm.contactEmail ?? '',
     contactPhone: farm.contactPhone ?? '', description: farm.description ?? '',
-    licensedAreaHectares: farm.licensedAreaHectares,
   })
   const s = (k: keyof UpdateFarmRequest, v: string | number | undefined) => setForm(p => ({ ...p, [k]: v }))
 
@@ -695,10 +694,6 @@ function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
         <FormField label="Contact name"><input className="input" value={form.contactName ?? ''} onChange={e => s('contactName', e.target.value)} /></FormField>
         <FormField label="Contact email"><input className="input" type="email" value={form.contactEmail ?? ''} onChange={e => s('contactEmail', e.target.value)} /></FormField>
         <FormField label="Contact phone"><input className="input" value={form.contactPhone ?? ''} onChange={e => s('contactPhone', e.target.value)} /></FormField>
-        <FormField label="Licensed area (ha)">
-          <input className="input" type="number" min={0} step={0.01}
-            value={form.licensedAreaHectares ?? ''} onChange={e => s('licensedAreaHectares', e.target.value ? Number(e.target.value) : undefined)} />
-        </FormField>
         <FormField label="Latitude">
           <input className="input" type="text" placeholder="e.g. 51.0447 N"
             value={latitudeInput} onChange={e => setLatitudeInput(e.target.value)} />

@@ -302,6 +302,7 @@ export default function SessionsPage() {
       {showCreate && (
         <CreateSessionModal
           farms={farms}
+          currentUserRole={role}
           defaultFarmId={selectedFarmId === ALL_FARMS_VALUE ? (farms[0]?.id ?? '') : selectedFarmId}
           onCreated={session => {
             if (selectedFarmId === ALL_FARMS_VALUE || session.farmId === selectedFarmId) {
@@ -564,11 +565,13 @@ export default function SessionsPage() {
 
 function CreateSessionModal({
   farms,
+  currentUserRole,
   defaultFarmId,
   onCreated,
   onCancel,
 }: {
   farms: FarmResponse[]
+  currentUserRole: string
   defaultFarmId: string
   onCreated: (session: ScoutingSessionDetailDto) => void
   onCancel: () => void
@@ -581,6 +584,7 @@ function CreateSessionModal({
   const [initialSessionDate] = useState(() => formatLocalDateInput())
   const [farmId, setFarmId] = useState(defaultFarmId)
   const [scouts, setScouts] = useState<UserDto[]>([])
+  const [scoutSource, setScoutSource] = useState<'farm' | 'fallback' | 'none'>('none')
   const [structures, setStructures] = useState<(GreenhouseResponse | FieldBlockResponse)[]>([])
   const [plannerTargets, setPlannerTargets] = useState<SessionPlannerTargetDraft[]>([])
   const [surveySpeciesCodes, setSurveySpeciesCodes] = useState<SpeciesCode[]>([])
@@ -606,8 +610,44 @@ function CreateSessionModal({
 
   useEffect(() => {
     if (!farmId) return
-    adminUsersApi.listScouts(farmId).then(setScouts).catch(() => setScouts([]))
-  }, [farmId])
+
+    function isAssignableScout(scout: UserDto) {
+      return scout.role === 'SCOUT' && scout.isEnabled && scout.active && !scout.deleted
+    }
+
+    function dedupeScouts(list: UserDto[]) {
+      return Array.from(new Map(list.map(scout => [scout.id, scout])).values())
+    }
+
+    Promise.all([
+      adminUsersApi.listScouts(farmId).catch(() => [] as UserDto[]),
+      currentUserRole === 'SUPER_ADMIN'
+        ? adminUsersApi.list({ role: 'SCOUT' }).catch(() => [] as UserDto[])
+        : Promise.resolve([] as UserDto[]),
+    ])
+      .then(([farmScopedScouts, allScouts]) => {
+        const assignableFarmScouts = dedupeScouts(farmScopedScouts.filter(isAssignableScout))
+        if (assignableFarmScouts.length > 0) {
+          setScouts(assignableFarmScouts)
+          setScoutSource('farm')
+          return
+        }
+
+        if (currentUserRole === 'SUPER_ADMIN') {
+          const fallbackScouts = dedupeScouts(allScouts.filter(isAssignableScout))
+          setScouts(fallbackScouts)
+          setScoutSource(fallbackScouts.length > 0 ? 'fallback' : 'none')
+          return
+        }
+
+        setScouts([])
+        setScoutSource('none')
+      })
+      .catch(() => {
+        setScouts([])
+        setScoutSource('none')
+      })
+  }, [currentUserRole, farmId])
 
   useEffect(() => {
     if (!farmId) {
@@ -820,14 +860,30 @@ function CreateSessionModal({
                 No scouts on this farm yet. You can assign one later.
               </div>
             ) : (
-              <select className="input" value={scoutId} onChange={e => setScoutId(e.target.value)}>
-                <option value="">- Assign later -</option>
-                {scouts.map(scout => (
-                  <option key={scout.id} value={scout.id}>
-                    {scout.firstName} {scout.lastName} ({scout.email})
-                  </option>
-                ))}
-              </select>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <select className="input" value={scoutId} onChange={e => setScoutId(e.target.value)}>
+                  <option value="">- Assign later -</option>
+                  {scouts.map(scout => (
+                    <option key={scout.id} value={scout.id}>
+                      {scout.firstName} {scout.lastName} ({scout.email})
+                    </option>
+                  ))}
+                </select>
+                {scoutSource === 'fallback' && (
+                  <div
+                    style={{
+                      padding: '8px 10px',
+                      background: '#f0f9ff',
+                      border: '0.5px solid #bae6fd',
+                      borderRadius: 7,
+                      fontSize: 12,
+                      color: '#0369a1',
+                    }}
+                  >
+                    No farm-scoped scouts were returned for this farm, so the full active scout list is shown instead.
+                  </div>
+                )}
+              </div>
             )}
           </Field>
 
