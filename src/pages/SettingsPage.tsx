@@ -8,8 +8,8 @@ export default function SettingsPage() {
   const [searchParams] = useSearchParams()
   const role = user?.role ?? ''
 
-  const [apiUrl, setApiUrl]   = useState(import.meta.env.VITE_API_URL ?? 'http://localhost:8080')
-  const [saved, setSaved]     = useState(false)
+  const [apiUrl, setApiUrl] = useState(`${(import.meta.env.VITE_API_URL ?? 'http://localhost:8080').replace(/\/+$/, '')}/pestscout`)
+  const [saved, setSaved] = useState(false)
 
   // Phone editing (SCOUT only)
   const [phone, setPhone]         = useState(user?.phoneNumber ?? '')
@@ -192,7 +192,7 @@ export default function SettingsPage() {
         <div className="card">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
             <SettingRow label="Dashboard version" value="0.1.0" />
-            <SettingRow label="API base URL" value={import.meta.env.VITE_API_URL ?? 'http://localhost:8080 (default)'} />
+            <SettingRow label="API base URL" value={apiUrl} />
             <SettingRow label="Build mode" value={import.meta.env.MODE} />
           </div>
         </div>

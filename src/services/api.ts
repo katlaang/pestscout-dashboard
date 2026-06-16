@@ -43,14 +43,16 @@ import { sessionEventStream } from './sessionStream'
 
 // ─── Axios instance ───────────────────────────────────────────────────────────
 
+const API_BASE_URL = `${(import.meta.env.VITE_API_URL ?? 'http://localhost:8080').replace(/\/+$/, '')}/pestscout`
+
 const api: AxiosInstance = axios.create({
-  baseURL: import.meta.env.VITE_API_URL ?? 'http://localhost:8080',
+  baseURL: API_BASE_URL,
   timeout: 15_000,
   headers: { 'Content-Type': 'application/json' }
 })
 
 export function buildApiUrl(path: string): string {
-  return `${api.defaults.baseURL}${path}`
+  return `${API_BASE_URL}${path}`
 }
 
 function isAuthRefreshRequest(url?: string) {
