@@ -398,7 +398,7 @@ export default function CreateFarmSetupForm({
       bays: (greenhouse.bays ?? []).map((bay: GreenhouseBayRequest) => ({
         bayTag: bay.bayTag.trim(),
         bedCount: Math.max(1, Number(bay.bedCount)),
-        bedTags: Array.from({ length: Math.max(1, Number(bay.bedCount)) }, (_, index) => bay.bedTags?.[index]?.trim() ?? ''),
+        bedTags: Array.from({ length: Math.max(1, Number(bay.bedCount)) }, (_, index) => bay.bedTags?.[index]?.trim() || `Bed ${index + 1}`),
       })),
     }))
   }
@@ -449,10 +449,6 @@ function cleanFieldBlocks() {
         for (const bay of greenhouse.bays ?? []) {
           if (!bay.bayTag) {
             onError('Each greenhouse bay needs a name or ID')
-            return
-          }
-          if ((bay.bedTags ?? []).length !== bay.bedCount || (bay.bedTags ?? []).some(tag => !tag)) {
-            onError('Name every bed in each greenhouse bay before creating the farm')
             return
           }
         }

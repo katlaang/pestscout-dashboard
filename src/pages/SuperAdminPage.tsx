@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, type ClipboardEvent } from 'react'
 import { useAuthStore } from '@/hooks/useAuth'
-import { adminFarmsApi, adminUsersApi, adminCacheApi } from '@/services/api'
+import { adminFarmsApi, adminUsersApi } from '@/services/api'
 import CreateFarmSetupForm from '@/components/farms/CreateFarmSetupForm'
 import StructureDetailsList from '@/components/farms/StructureDetailsList'
 import FarmStructureForm from '@/components/farms/StructureForm'
@@ -10,11 +10,10 @@ import type {
   UserDto, FarmMemberResponse,
   UpdateFarmLicenseRequest, UpdateFarmRequest,
   CreateFarmRequest, UpdateUserRequest,
-  CacheInfo,
 } from '@/types'
 import { formatDate } from '@/utils'
 
-type Tab = 'farms' | 'users' | 'cache'
+type Tab = 'farms' | 'users'
 
 function preventPasswordPaste(event: ClipboardEvent<HTMLInputElement>) {
   event.preventDefault()
@@ -56,7 +55,7 @@ export default function SuperAdminPage() {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 2, marginBottom: 20, borderBottom: '1px solid #e5e7eb' }}>
-        {(['farms', 'users', 'cache'] as Tab[]).map(t => (
+        {(['farms', 'users'] as Tab[]).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -76,7 +75,6 @@ export default function SuperAdminPage() {
 
       {tab === 'farms' && <FarmsTab />}
       {tab === 'users' && <UsersTab />}
-      {tab === 'cache' && <CacheTab />}
     </div>
   )
 }
@@ -654,6 +652,7 @@ function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
   const [saving, setSaving] = useState(false)
   const [latitudeInput, setLatitudeInput] = useState(formatCoordinateInput(farm.latitude))
   const [longitudeInput, setLongitudeInput] = useState(formatCoordinateInput(farm.longitude))
+  const [ownerId, setOwnerId] = useState(farm.ownerId ?? '')
   const [form, setForm] = useState<UpdateFarmRequest>({
     name: farm.name, city: farm.city ?? '', country: farm.country ?? '',
     province: farm.province ?? '', postalCode: farm.postalCode ?? '',
@@ -676,7 +675,7 @@ function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
     }
 
     setSaving(true)
-    try { onSaved(await adminFarmsApi.update(farm.id, farm, { ...form, latitude, longitude })) }
+    try { onSaved(await adminFarmsApi.update(farm.id, farm, { ...form, latitude, longitude, ownerId: ownerId.trim() || undefined })) }
     catch (e: any) { onError(e?.response?.data?.message ?? 'Update failed') }
     finally { setSaving(false) }
   }
@@ -702,8 +701,14 @@ function EditFarmDetailsForm({ farm, onSaved, onCancel, onError }: {
           <input className="input" type="text" placeholder="e.g. 114.0719 W"
             value={longitudeInput} onChange={e => setLongitudeInput(e.target.value)} />
         </FormField>
+        <FormField label="Owner (User ID)">
+          <input className="input" placeholder="User UUID" value={ownerId} onChange={e => setOwnerId(e.target.value)} />
+        </FormField>
       </div>
       <FormField label="Address"><input className="input" value={form.address ?? ''} onChange={e => s('address', e.target.value)} /></FormField>
+      <div style={{ marginTop: 8 }}>
+        <FormField label="Description"><input className="input" placeholder="Optional farm description" value={form.description ?? ''} onChange={e => s('description', e.target.value)} /></FormField>
+      </div>
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
         <button className="btn-secondary" style={{ fontSize: 12 }} onClick={onCancel}>Cancel</button>
         <button className="btn-primary" style={{ fontSize: 12 }} onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save changes'}</button>
@@ -1608,101 +1613,6 @@ function CreateUserForm({ onCreated, onCancel, onError }: { onCreated: (u: UserD
   )
 }
 
-// ─── CACHE TAB ────────────────────────────────────────────────────────────────
-
-function CacheTab() {
-  const [info, setInfo] = useState<CacheInfo | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [clearing, setClearing] = useState<string | null>(null)
-  const [success, setSuccess] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  function flash(msg: string, isError = false) {
-    if (isError) { setError(msg); setTimeout(() => setError(null), 4000) }
-    else { setSuccess(msg); setTimeout(() => setSuccess(null), 3000) }
-  }
-
-  const load = useCallback(() => {
-    setLoading(true)
-    adminCacheApi.info().then(setInfo).catch(() => setInfo(null)).finally(() => setLoading(false))
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
-  async function clearOne(name: string) {
-    setClearing(name)
-    try { await adminCacheApi.clearNamed(name); flash(`Cache "${name}" cleared`); load() }
-    catch { flash('Failed to clear cache', true) }
-    finally { setClearing(null) }
-  }
-
-  async function clearAll() {
-    if (!confirm('Clear ALL caches? This may temporarily slow down the application.')) return
-    setClearing('__all__')
-    try { await adminCacheApi.clearAll(); flash('All caches cleared'); load() }
-    catch { flash('Failed to clear caches', true) }
-    finally { setClearing(null) }
-  }
-
-  return (
-    <div style={{ maxWidth: 640 }}>
-      {error && <Banner type="error">{error}</Banner>}
-      {success && <Banner type="success">{success}</Banner>}
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <p style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>Redis cache</p>
-          {info && <p style={{ fontSize: 12, color: '#6b7280' }}>{info.totalKeys} total keys</p>}
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn-secondary" style={{ fontSize: 11 }} onClick={load}>Refresh</button>
-          <button style={{ padding: '6px 14px', fontSize: 11, borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500, border: '0.5px solid #fca5a5', background: '#fff5f5', color: '#c53030' }}
-            onClick={clearAll} disabled={clearing === '__all__'}>
-            {clearing === '__all__' ? 'Clearing…' : 'Clear all'}
-          </button>
-        </div>
-      </div>
-
-      {loading ? <p style={{ fontSize: 12, color: '#9ca3af' }}>Loading cache info…</p>
-        : !info ? (
-          <div style={{ background: '#fff5f5', border: '0.5px solid #fca5a5', borderRadius: 8, padding: 16, fontSize: 12, color: '#c53030' }}>
-            Could not load cache stats. The cache admin endpoint may not be available.
-          </div>
-        ) : (
-          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead style={{ background: '#f9fafb' }}>
-                <tr>
-                  {['Cache name', 'Keys', 'Hit rate', 'Evictions', ''].map(h => (
-                    <th key={h} style={{ textAlign: 'left', padding: '8px 14px', fontSize: 10, fontWeight: 500, color: '#9ca3af', textTransform: 'uppercase', borderBottom: '0.5px solid #e5e7eb' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {info.caches.map(c => (
-                  <tr key={c.name} style={{ borderBottom: '0.5px solid #f3f4f6' }}>
-                    <td style={{ padding: '9px 14px', fontFamily: 'DM Mono, monospace', color: '#111827' }}>{c.name}</td>
-                    <td style={{ padding: '9px 14px', fontFamily: 'DM Mono, monospace' }}>{c.size}</td>
-                    <td style={{ padding: '9px 14px', color: '#6b7280' }}>{c.hitRate != null ? `${(c.hitRate * 100).toFixed(1)}%` : '—'}</td>
-                    <td style={{ padding: '9px 14px', color: '#6b7280' }}>{c.evictions ?? '—'}</td>
-                    <td style={{ padding: '9px 14px' }}>
-                      <button onClick={() => clearOne(c.name)} disabled={clearing === c.name}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#e05252', fontSize: 11, fontFamily: 'inherit', padding: '2px 6px', opacity: clearing === c.name ? 0.5 : 1 }}>
-                        {clearing === c.name ? 'Clearing…' : 'Clear'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {info.caches.length === 0 && (
-                  <tr><td colSpan={5} style={{ padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 12 }}>No caches found</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-    </div>
-  )
-}
 
 // ─── Shared small components ──────────────────────────────────────────────────
 

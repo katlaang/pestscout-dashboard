@@ -3,11 +3,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore, getPostLoginRedirect } from '@/hooks/useAuth'
 
 const REASON_MESSAGES: Record<string, string> = {
-  idle:            'You were signed out after 5 minutes of inactivity.',
-  session_expired: 'Your session expired. Please sign in again.',
-  unauthorized:    'Your session is no longer valid. Please sign in again.',
-  session_replaced:'Your session was opened elsewhere. Please log in again.',
-  session_invalid: 'Your session is no longer valid. Please log in again.',
+  idle:            'Your session timed out due to inactivity.',
+  session_expired: 'Your session timed out due to inactivity.',
+  unauthorized:    'Your session timed out due to inactivity.',
+  session_replaced:'Your session was opened on another device. Please sign in again.',
+  session_invalid: 'Your session timed out. Please sign in again.',
 }
 
 export default function LoginPage() {

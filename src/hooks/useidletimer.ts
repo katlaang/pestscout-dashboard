@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuthStore } from './useAuth'
-import { authApi } from '@/services/api'
+import { authApi, forceLogout } from '@/services/api'
+import { clearStoredAuth } from '@/utils/authStorage'
 
-const WARNING_MS = 4 * 60 * 1000   // 4 minutes → show banner
-const IDLE_MS    = 5 * 60 * 1000   // 5 minutes — matches backend idle timeout
+const WARNING_MS = 5 * 60 * 1000   // 5 minutes idle → show "will expire in 5 min" banner
+const IDLE_MS    = 10 * 60 * 1000  // 10 minutes total idle → session expires
 const EVENTS = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'] as const
 
 export function useIdleTimer() {
-  const { user, logout, token, refreshToken, tokenExpiresAt, refreshSession } = useAuthStore()
+  const { user, token, refreshToken, tokenExpiresAt, refreshSession } = useAuthStore()
   const idleTimer    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [warningActive, setWarningActive] = useState(false)
+  const [timedOut, setTimedOut] = useState(false)
 
   // Schedule silent token refresh 30 s before expiry — only runs while user is active
   function scheduleRefresh() {
@@ -28,7 +30,7 @@ export function useIdleTimer() {
         await refreshSession(refreshToken)
         scheduleRefresh()
       } catch {
-        logout('session_expired')
+        forceLogout('session_expired')
       }
     }, refreshIn)
   }
@@ -37,14 +39,17 @@ export function useIdleTimer() {
     if (idleTimer.current)    clearTimeout(idleTimer.current)
     if (warningTimer.current) clearTimeout(warningTimer.current)
     setWarningActive(false)
+    setTimedOut(false)
 
     // Show banner 1 min before backend timeout
     warningTimer.current = setTimeout(() => setWarningActive(true), WARNING_MS)
 
-    // Hard logout at 5 min
+    // On idle: clear credentials silently — show overlay instead of auto-redirecting
     idleTimer.current = setTimeout(() => {
       setWarningActive(false)
-      logout('idle')
+      setTimedOut(true)
+      clearStoredAuth()
+      useAuthStore.setState({ user: null, token: null, refreshToken: null, tokenExpiresAt: null, farms: [] })
     }, IDLE_MS)
 
     scheduleRefresh()
@@ -81,5 +86,5 @@ export function useIdleTimer() {
     }
   }, [user, token, tokenExpiresAt, refreshToken, refreshSession])
 
-  return { warningActive, extendSession }
+  return { warningActive, timedOut, extendSession }
 }

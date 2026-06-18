@@ -145,8 +145,8 @@ export default function StructureForm({
           bedCount: Number(bay.bedCount),
           bedTags: Array.from(
             { length: Math.max(1, Number(bay.bedCount)) },
-            (_, index) => bay.bedTags?.[index]?.trim() ?? '',
-          ).filter(Boolean),
+            (_, index) => bay.bedTags?.[index]?.trim() || `Bed ${index + 1}`,
+          ),
         }))
         .filter(bay => bay.bayTag && Number.isFinite(bay.bedCount) && bay.bedCount > 0)
 
@@ -155,10 +155,6 @@ export default function StructureForm({
         return
       }
 
-      if (cleanedBays.some(bay => bay.bedTags.length !== bay.bedCount)) {
-        onError('Name every bed in each greenhouse bay before saving')
-        return
-      }
 
       const body = {
         farmId,

@@ -1,36 +1,16 @@
-// Generic autosave hook — persists in-progress form state to localStorage so a
-// reload, accidental logout, or browser crash doesn't wipe unsaved work.
-//
-// Usage:
-//
-//   const [form, setForm] = useState<MyForm>(initialValues)
-//   const { hasDraft, restoreDraft, clearDraft } = useFormDraft(
-//     'session-create-draft',   // unique key scoped to this form/context
-//     form,
-//     setForm,
-//   )
-//
-//   // Offer to restore on mount:
-//   useEffect(() => {
-//     if (!hasDraft) return
-//     if (window.confirm('You have unsaved work from earlier — restore it?')) {
-//       restoreDraft()
-//     } else {
-//       clearDraft()
-//     }
-//   }, [])                      // intentionally runs once
-//
-//   // Clear after a successful submit:
-//   await api.createSession(form)
-//   clearDraft()
-
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 const DRAFT_PREFIX = 'pestscout-draft:'
 const DEFAULT_DEBOUNCE_MS = 800
 
+interface DraftEnvelope<T> {
+  data: T
+  savedAt: number  // epoch ms
+}
+
 interface UseFormDraftResult {
   hasDraft: boolean
+  draftAge: number | null  // ms since last save, null if no draft
   restoreDraft: () => void
   clearDraft: () => void
 }
@@ -39,27 +19,43 @@ export function useFormDraft<T>(
   draftKey: string,
   formState: T,
   setFormState: (value: T) => void,
-  options: { debounceMs?: number } = {},
+  options: { debounceMs?: number; expiryMs?: number } = {},
 ): UseFormDraftResult {
-  const { debounceMs = DEFAULT_DEBOUNCE_MS } = options
+  const { debounceMs = DEFAULT_DEBOUNCE_MS, expiryMs } = options
   const storageKey = `${DRAFT_PREFIX}${draftKey}`
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const [hasDraft, setHasDraft] = useState<boolean>(() => {
-    try { return window.localStorage.getItem(storageKey) !== null } catch { return false }
+  const readEnvelope = useCallback((): DraftEnvelope<T> | null => {
+    try {
+      const raw = window.localStorage.getItem(storageKey)
+      if (!raw) return null
+      const envelope = JSON.parse(raw) as DraftEnvelope<T>
+      if (expiryMs && Date.now() - envelope.savedAt > expiryMs) {
+        window.localStorage.removeItem(storageKey)
+        return null
+      }
+      return envelope
+    } catch {
+      return null
+    }
+  }, [storageKey, expiryMs])
+
+  const [hasDraft, setHasDraft] = useState<boolean>(() => readEnvelope() !== null)
+  const [draftAge, setDraftAge] = useState<number | null>(() => {
+    const e = readEnvelope()
+    return e ? Date.now() - e.savedAt : null
   })
 
-  // Autosave on every formState change, debounced so we're not writing on
-  // every keystroke.
   useEffect(() => {
     if (debounceTimer.current) clearTimeout(debounceTimer.current)
 
     debounceTimer.current = setTimeout(() => {
       try {
-        window.localStorage.setItem(storageKey, JSON.stringify(formState))
+        const envelope: DraftEnvelope<T> = { data: formState, savedAt: Date.now() }
+        window.localStorage.setItem(storageKey, JSON.stringify(envelope))
         setHasDraft(true)
+        setDraftAge(0)
       } catch (err) {
-        // Non-fatal: quota exceeded, private-browsing restrictions, etc.
         console.warn('[useFormDraft] autosave failed:', err)
       }
     }, debounceMs)
@@ -71,22 +67,19 @@ export function useFormDraft<T>(
   }, [JSON.stringify(formState), storageKey, debounceMs])
 
   const restoreDraft = useCallback(() => {
-    try {
-      const raw = window.localStorage.getItem(storageKey)
-      if (raw) setFormState(JSON.parse(raw) as T)
-    } catch (err) {
-      console.warn('[useFormDraft] restore failed:', err)
-    }
-  }, [storageKey, setFormState])
+    const envelope = readEnvelope()
+    if (envelope) setFormState(envelope.data)
+  }, [readEnvelope, setFormState])
 
   const clearDraft = useCallback(() => {
     try {
       window.localStorage.removeItem(storageKey)
       setHasDraft(false)
+      setDraftAge(null)
     } catch (err) {
       console.warn('[useFormDraft] clear failed:', err)
     }
   }, [storageKey])
 
-  return { hasDraft, restoreDraft, clearDraft }
+  return { hasDraft, draftAge, restoreDraft, clearDraft }
 }

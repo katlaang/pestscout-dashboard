@@ -1,6 +1,7 @@
-import { useState, useEffect, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { farmsApi, sessionsApi, adminFarmsApi, adminUsersApi } from '@/services/api'
+import { useFormDraft } from '@/hooks/useFormDraft'
 import type {
   FarmResponse,
   ScoutingSessionDetailDto,
@@ -579,10 +580,12 @@ function CreateSessionModal({
   onCancel: () => void
 }) {
   const { week: defaultWeek } = currentWeek()
+  const { user } = useAuthStore()
   const [saving, setSaving] = useState(false)
   const [dismissSaving, setDismissSaving] = useState(false)
   const [dismissPromptOpen, setDismissPromptOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showDraftBanner, setShowDraftBanner] = useState(true)
   const [initialSessionDate] = useState(() => formatLocalDateInput())
   const [farmId, setFarmId] = useState(defaultFarmId)
   const [scouts, setScouts] = useState<UserDto[]>([])
@@ -597,6 +600,32 @@ function CreateSessionModal({
   const [notes, setNotes] = useState('')
   const [sessionDate, setSessionDate] = useState(initialSessionDate)
   const [weekNumber, setWeekNumber] = useState(defaultWeek)
+
+  // ── Local draft autosave (survives idle timeout) ──────────────────────────
+  const draftState = { farmId, scoutId, crop, variety, notes, sessionDate, weekNumber, plannerTargets, surveySpeciesCodes, customSurveySpeciesIds }
+  type DraftState = typeof draftState
+
+  const applyDraft = useCallback((d: DraftState) => {
+    setFarmId(d.farmId ?? defaultFarmId)
+    setScoutId(d.scoutId ?? '')
+    setCrop(d.crop ?? '')
+    setVariety(d.variety ?? '')
+    setNotes(d.notes ?? '')
+    setSessionDate(d.sessionDate ?? initialSessionDate)
+    setWeekNumber(d.weekNumber ?? defaultWeek)
+    setPlannerTargets(d.plannerTargets ?? [])
+    setSurveySpeciesCodes(d.surveySpeciesCodes ?? [])
+    setCustomSurveySpeciesIds(d.customSurveySpeciesIds ?? [])
+  // setters are stable; include initialSessionDate & defaultWeek as values
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultFarmId, defaultWeek, initialSessionDate])
+
+  const { hasDraft, draftAge, restoreDraft, clearDraft } = useFormDraft(
+    `session-create-${user?.id ?? 'anon'}`,
+    draftState,
+    applyDraft,
+    { expiryMs: 60 * 60 * 1000 },  // 1-hour expiry
+  )
   const selectedFarm = farms.find(farm => farm.id === farmId)
   const isDirty =
     farmId !== defaultFarmId ||
@@ -736,6 +765,7 @@ function CreateSessionModal({
     setDismissSaving(true)
     setError(null)
     try {
+      clearDraft()
       onCreated(await sessionsApi.create(buildRequestBody('DRAFT')))
     } catch (error: any) {
       setError(error?.response?.data?.message ?? 'Failed to save draft session')
@@ -754,6 +784,7 @@ function CreateSessionModal({
     setSaving(true)
     setError(null)
     try {
+      clearDraft()
       onCreated(await sessionsApi.create(buildRequestBody()))
     } catch (error: any) {
       setError(error?.response?.data?.message ?? 'Failed to create session')
@@ -823,6 +854,35 @@ function CreateSessionModal({
             x
           </button>
         </div>
+
+        {hasDraft && showDraftBanner && (
+          <div style={{
+            marginBottom: 14, padding: '10px 14px', borderRadius: 8, fontSize: 12,
+            background: '#f0faf4', border: '0.5px solid #a7dcbc',
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            <span style={{ flex: 1, color: '#1e5c3a' }}>
+              💾 You have an unsaved draft
+              {draftAge != null && draftAge > 60_000
+                ? ` from ${Math.round(draftAge / 60_000)} min ago`
+                : ' from just now'
+              } — restore it?
+            </span>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: 11, padding: '4px 10px' }}
+              onClick={() => { restoreDraft(); setShowDraftBanner(false) }}
+            >
+              Restore
+            </button>
+            <button
+              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#9ca3af', lineHeight: 1, padding: '0 2px' }}
+              onClick={() => { clearDraft(); setShowDraftBanner(false) }}
+            >
+              ×
+            </button>
+          </div>
+        )}
 
         {error && (
           <div
