@@ -173,6 +173,9 @@ export const farmsApi = {
 
   get: (farmId: string) =>
     api.get<FarmResponse>(`/api/farms/${farmId}`).then(r => r.data),
+
+  getBySlug: (slug: string) =>
+    api.get<FarmResponse>(`/api/farms/by-slug/${slug}`).then(r => r.data),
 }
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────

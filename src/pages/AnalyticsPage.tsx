@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { useCurrentFarmStore } from '@/hooks/useCurrentFarm'
 import {
   Area,
   AreaChart,
@@ -101,6 +102,7 @@ function compareWeekRows(a: GreenhouseChartRow, b: GreenhouseChartRow) {
 }
 
 export default function AnalyticsPage() {
+  const { farmId: currentFarmId } = useCurrentFarmStore()
   const [searchParams, setSearchParams] = useSearchParams()
   const [farms, setFarms] = useState<FarmResponse[]>([])
   const [farmId, setFarmId] = useState('')
@@ -128,10 +130,10 @@ export default function AnalyticsPage() {
         return
       }
       if (data.length > 0) {
-        setFarmId(data[0].id)
+        setFarmId(currentFarmId ?? data[0].id)
       }
     })
-  }, [searchParams])
+  }, [searchParams, currentFarmId])
 
   useEffect(() => {
     if (!farmId) return

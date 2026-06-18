@@ -1,27 +1,32 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/hooks/useAuth'
+import { useCurrentFarmStore } from '@/hooks/useCurrentFarm'
 import { useAlertCount } from '@/hooks/useAlertCount'
-
-const ALL_NAV = [
-  { to: '/',           label: 'Dashboard',  icon: DashIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
-  { to: '/farms',      label: 'Farms',      icon: FarmIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
-  { to: '/sessions',   label: 'Sessions',   icon: ListIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER', 'SCOUT'] },
-  { to: '/analytics',  label: 'Analytics',  icon: ChartIcon, roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
-  { to: '/heatmap',    label: 'Heat maps',  icon: GridIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
-  { to: '/alerts',     label: 'Alerts',     icon: BellIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
-  { to: '/profile',    label: 'Profile',    icon: PersonIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER', 'SCOUT'] },
-]
-
-const SUPER_ADMIN_NAV = [
-  { to: '/admin', label: 'Admin panel', icon: ShieldIcon },
-]
 
 export default function Sidebar() {
   const { user, logout } = useAuthStore()
+  const { farmSlug } = useCurrentFarmStore()
   const { count: alertCount } = useAlertCount()
   const navigate = useNavigate()
   const role = user?.role ?? ''
-  const NAV = ALL_NAV.filter(item => item.roles.includes(role))
+
+  // When a farm slug is active, prefix farm-scoped routes with it.
+  // Fall back to flat routes (for SUPER_ADMIN and for the /farms picker page).
+  const fp = farmSlug ? `/${farmSlug}` : ''
+
+  const NAV = [
+    { to: `${fp}/dashboard`,  label: 'Dashboard', icon: DashIcon,   roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
+    { to: '/farms',            label: 'Farms',     icon: FarmIcon,   roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
+    { to: `${fp}/sessions`,   label: 'Sessions',  icon: ListIcon,   roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER', 'SCOUT'] },
+    { to: `${fp}/analytics`,  label: 'Analytics', icon: ChartIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
+    { to: `${fp}/heatmap`,    label: 'Heat maps', icon: GridIcon,   roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
+    { to: `${fp}/alerts`,     label: 'Alerts',    icon: BellIcon,   roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
+    { to: '/profile',          label: 'Profile',   icon: PersonIcon, roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER', 'SCOUT'] },
+  ].filter(item => item.roles.includes(role))
+
+  const SUPER_ADMIN_NAV = [
+    { to: '/admin', label: 'Admin panel', icon: ShieldIcon },
+  ]
 
   const initials = [user?.firstName?.[0], user?.lastName?.[0]]
     .filter(Boolean).join('').toUpperCase() || '?'
@@ -76,7 +81,7 @@ export default function Sidebar() {
           <NavLink
             key={to}
             to={to}
-            end={to === '/'}
+            end
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
           >
             <Icon size={15} />

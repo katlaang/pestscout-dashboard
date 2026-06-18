@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-route
 import { useEffect } from 'react'
 import { Toaster } from 'react-hot-toast'
 import AppLayout from '@/components/layout/AppLayout'
+import FarmScopedLayout from '@/components/layout/FarmScopedLayout'
 import ProtectedRoute from '@/components/layout/ProtectedRoute'
 import LoginPage from '@/pages/LoginPage'
 import ResetPasswordPage from '@/pages/resetpasswordpage'
@@ -14,21 +15,24 @@ import HeatmapPage from '@/pages/HeatmapPage'
 import AlertsPage from '@/pages/AlertsPage'
 import ProfilePage from '@/pages/ProfilePage'
 import SuperAdminPage from '@/pages/SuperAdminPage'
-import { useIdleTimer } from '@/hooks/useidletimer'
-import { useAuthStore } from '@/hooks/useAuth'
+import { useAuthStore, getPostLoginRedirect } from '@/hooks/useAuth'
 import { setAppNavigate } from '@/utils/navigation'
 
-// Wraps protected routes and activates the idle timer
+// IdleSessionManager (and its useIdleTimer hook) live inside AppLayout,
+// so both layout wrappers below get idle tracking automatically.
+
 function AuthenticatedApp() {
-  useIdleTimer()
   return <AppLayout />
 }
 
-// Scouts land on /sessions; everyone else lands on the dashboard
+function FarmScopedAuthenticatedApp() {
+  return <FarmScopedLayout />
+}
+
 function RootRedirect() {
-  const { user } = useAuthStore()
-  if (user?.role === 'SCOUT') return <Navigate to="/sessions" replace />
-  return <DashboardPage />
+  const { user, farms } = useAuthStore()
+  if (!user) return <Navigate to="/login" replace />
+  return <Navigate to={getPostLoginRedirect(user, farms)} replace />
 }
 
 function NavigationBridge() {
@@ -61,26 +65,33 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
 
-        <Route
-          path="/"
-          element={
-            <ProtectedRoute>
-              <AuthenticatedApp />
-            </ProtectedRoute>
-          }
-        >
-          <Route index element={<RootRedirect />} />
-          <Route path="farms" element={<FarmsPage />} />
+        {/* Non-farm-scoped protected routes — layout via AppLayout */}
+        <Route element={<ProtectedRoute><AuthenticatedApp /></ProtectedRoute>}>
+          <Route path="/farms" element={<FarmsPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/settings" element={<Navigate to="/profile" replace />} />
+          <Route path="/admin" element={<SuperAdminPage />} />
+          {/* Flat routes for SUPER_ADMIN who has no single farm context */}
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/sessions" element={<SessionsPage />} />
+          <Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
+          <Route path="/analytics" element={<AnalyticsPage />} />
+          <Route path="/heatmap" element={<HeatmapPage />} />
+          <Route path="/alerts" element={<AlertsPage />} />
+        </Route>
+
+        {/* Farm-scoped routes — layout via FarmScopedLayout > AppLayout */}
+        <Route path="/:farmSlug" element={<ProtectedRoute><FarmScopedAuthenticatedApp /></ProtectedRoute>}>
+          <Route path="dashboard" element={<DashboardPage />} />
           <Route path="sessions" element={<SessionsPage />} />
           <Route path="sessions/:sessionId" element={<SessionDetailPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="heatmap" element={<HeatmapPage />} />
           <Route path="alerts" element={<AlertsPage />} />
-          <Route path="profile" element={<ProfilePage />} />
-          <Route path="settings" element={<Navigate to="/profile" replace />} />
-          <Route path="admin" element={<SuperAdminPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
+
+        <Route path="/" element={<ProtectedRoute><RootRedirect /></ProtectedRoute>} />
+        <Route path="*" element={<Navigate to="/farms" replace />} />
       </Routes>
     </BrowserRouter>
   )

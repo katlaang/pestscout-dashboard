@@ -1,69 +1,85 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuthStore } from './useAuth'
+import { authApi } from '@/services/api'
 
-const IDLE_MS = 5 * 60 * 1000   // 5 minutes — matches backend idle timeout
+const WARNING_MS = 4 * 60 * 1000   // 4 minutes → show banner
+const IDLE_MS    = 5 * 60 * 1000   // 5 minutes — matches backend idle timeout
 const EVENTS = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll'] as const
 
-/**
- * Attaches global activity listeners and force-logs out after IDLE_MS of inactivity.
- * Only active when user is authenticated.
- * Silent refresh is only attempted while the user is active (via resetIdleTimer).
- */
 export function useIdleTimer() {
   const { user, logout, token, refreshToken, tokenExpiresAt, refreshSession } = useAuthStore()
-  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const idleTimer    = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Schedule a silent token refresh just before expiry, but only if user is active
+  const [warningActive, setWarningActive] = useState(false)
+
+  // Schedule silent token refresh 30 s before expiry — only runs while user is active
   function scheduleRefresh() {
     if (refreshTimer.current) clearTimeout(refreshTimer.current)
     if (!tokenExpiresAt || !refreshToken) return
 
     const msUntilExpiry = tokenExpiresAt - Date.now()
-    // Refresh 30s before expiry (if expiry is in the future)
     const refreshIn = msUntilExpiry - 30_000
     if (refreshIn <= 0) return
 
     refreshTimer.current = setTimeout(async () => {
       try {
         await refreshSession(refreshToken)
-        scheduleRefresh() // reschedule for the new token
+        scheduleRefresh()
       } catch {
-        // Refresh failed while active — force logout
         logout('session_expired')
       }
     }, refreshIn)
   }
 
   function resetIdleTimer() {
-    if (idleTimer.current) clearTimeout(idleTimer.current)
+    if (idleTimer.current)    clearTimeout(idleTimer.current)
+    if (warningTimer.current) clearTimeout(warningTimer.current)
+    setWarningActive(false)
+
+    // Show banner 1 min before backend timeout
+    warningTimer.current = setTimeout(() => setWarningActive(true), WARNING_MS)
+
+    // Hard logout at 5 min
     idleTimer.current = setTimeout(() => {
+      setWarningActive(false)
       logout('idle')
     }, IDLE_MS)
 
-    // Each activity event reschedules the refresh too (user is clearly active)
     scheduleRefresh()
   }
+
+  // Ping backend to reset its lastActivityAt, then restart the local timer.
+  // Used by the "Continue working" button.
+  const extendSession = useCallback(async () => {
+    try {
+      await authApi.me()
+    } catch {
+      // If the call fails the 401 interceptor handles logout
+    }
+    resetIdleTimer()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (!user || !token) return
 
-    // Start idle timer immediately
     resetIdleTimer()
 
-    // Attach activity listeners
     EVENTS.forEach(event =>
       window.addEventListener(event, resetIdleTimer, { passive: true })
     )
 
     return () => {
-      if (idleTimer.current) clearTimeout(idleTimer.current)
+      if (idleTimer.current)    clearTimeout(idleTimer.current)
+      if (warningTimer.current) clearTimeout(warningTimer.current)
       if (refreshTimer.current) clearTimeout(refreshTimer.current)
       EVENTS.forEach(event =>
         window.removeEventListener(event, resetIdleTimer)
       )
     }
-  }, [user, token, tokenExpiresAt, refreshToken, refreshSession]) // restart when auth state changes
+  }, [user, token, tokenExpiresAt, refreshToken, refreshSession])
 
-  // Intentionally not returning anything — this hook is purely for side effects
+  return { warningActive, extendSession }
 }

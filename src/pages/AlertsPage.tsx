@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { farmsApi, analyticsApi } from '@/services/api'
+import { useCurrentFarmStore } from '@/hooks/useCurrentFarm'
 import type { FarmResponse, AlertDto } from '@/types'
 import { formatDateTime } from '@/utils'
 import { useAlertCount } from '@/hooks/useAlertCount'
@@ -108,6 +109,7 @@ function getSeverityVisuals(value: string) {
 }
 
 export default function AlertsPage() {
+  const { farmId: currentFarmId } = useCurrentFarmStore()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [farms, setFarms] = useState<FarmResponse[]>([])
@@ -125,7 +127,7 @@ export default function AlertsPage() {
 
       setFarms(data)
 
-      if (farmParam === ALL_FARMS_VALUE || (!farmParam && data.length > 1)) {
+      if (farmParam === ALL_FARMS_VALUE || (!farmParam && !currentFarmId && data.length > 1)) {
         setSelectedFarmId(ALL_FARMS_VALUE)
         return
       }
@@ -136,10 +138,10 @@ export default function AlertsPage() {
       }
 
       if (data.length > 0) {
-        setSelectedFarmId(data[0].id)
+        setSelectedFarmId(currentFarmId ?? data[0].id)
       }
     })
-  }, [searchParams])
+  }, [searchParams, currentFarmId])
 
   useEffect(() => {
     if (!selectedFarmId) return

@@ -15,6 +15,7 @@ import AlertCard from '@/components/dashboard/AlertCard'
 import KpiCard from '@/components/dashboard/KpiCard'
 import SessionsTable from '@/components/scouting/SessionsTable'
 import { useAuthStore } from '@/hooks/useAuth'
+import { useCurrentFarmStore } from '@/hooks/useCurrentFarm'
 import { formatDate, formatTrendWeekLabel, getDistributionCount, PEST_CHART_COLORS } from '@/utils'
 
 const ALL_FARMS_VALUE = '__all__'
@@ -30,6 +31,7 @@ export default function DashboardPage() {
 }
 
 function ManagerDashboard() {
+  const { farmId: currentFarmId } = useCurrentFarmStore()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [farms, setFarms] = useState<FarmResponse[]>([])
@@ -50,11 +52,11 @@ function ManagerDashboard() {
 
         setFarms(farmList)
         setOverview(dashboardOverview)
-        setSelectedFarmId(matchedFarm?.id ?? ALL_FARMS_VALUE)
+        setSelectedFarmId(matchedFarm?.id ?? currentFarmId ?? ALL_FARMS_VALUE)
       })
       .catch(() => setError('Could not load your attached farms dashboard.'))
       .finally(() => setLoading(false))
-  }, [searchParams])
+  }, [searchParams, currentFarmId])
 
   function handleFarmSelection(nextFarmId: string) {
     setSelectedFarmId(nextFarmId)

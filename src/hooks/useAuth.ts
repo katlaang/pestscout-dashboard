@@ -1,15 +1,22 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
-import type { LoginResponse, UserDto } from '@/types'
+import type { FarmMembershipSummary, LoginResponse, UserDto } from '@/types'
 import { authApi } from '@/services/api'
 import { AUTH_STORE_KEY, clearStoredAuth, getStoredRefreshToken, storeAuthTokens } from '@/utils/authStorage'
 import { navigateToLogin } from '@/utils/navigation'
+
+export function getPostLoginRedirect(user: UserDto, farms: FarmMembershipSummary[]): string {
+  if (user.role === 'SUPER_ADMIN') return '/admin'
+  if (farms.length === 1) return `/${farms[0].slug}/dashboard`
+  return '/farms'
+}
 
 interface AuthState {
   user: UserDto | null
   token: string | null
   refreshToken: string | null
   tokenExpiresAt: number | null   // epoch ms
+  farms: FarmMembershipSummary[]
   isLoading: boolean
   error: string | null
   login: (email: string, password: string) => Promise<void>
@@ -27,6 +34,7 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       refreshToken: null,
       tokenExpiresAt: null,
+      farms: [],
       isLoading: false,
       error: null,
 
@@ -40,6 +48,7 @@ export const useAuthStore = create<AuthState>()(
         const me = await authApi.me()
         set({
           user: me,
+          farms: response.farms ?? [],
           token: response.token,
           refreshToken: response.refreshToken,
           tokenExpiresAt: expiresAt,
@@ -92,6 +101,7 @@ export const useAuthStore = create<AuthState>()(
         token: state.token,
         refreshToken: state.refreshToken,
         tokenExpiresAt: state.tokenExpiresAt,
+        farms: state.farms,
       }),
     }
   )

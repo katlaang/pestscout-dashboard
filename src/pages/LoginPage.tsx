@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useAuthStore } from '@/hooks/useAuth'
+import { useAuthStore, getPostLoginRedirect } from '@/hooks/useAuth'
 
 const REASON_MESSAGES: Record<string, string> = {
   idle:            'You were signed out after 5 minutes of inactivity.',
@@ -11,7 +11,7 @@ const REASON_MESSAGES: Record<string, string> = {
 }
 
 export default function LoginPage() {
-  const { login, isLoading, error, user, clearError } = useAuthStore()
+  const { login, isLoading, error, user, farms, clearError } = useAuthStore()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const reason = searchParams.get('reason')
@@ -28,9 +28,9 @@ export default function LoginPage() {
     } else if (user.passwordExpiryWarningRequired && !showExpiryPopup) {
       setShowExpiryPopup(true)
     } else if (!user.passwordExpiryWarningRequired) {
-      navigate('/', { replace: true })
+      navigate(getPostLoginRedirect(user, farms), { replace: true })
     }
-  }, [user, navigate, showExpiryPopup])
+  }, [user, farms, navigate, showExpiryPopup])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -61,7 +61,7 @@ export default function LoginPage() {
               Your password is nearing expiry. Please change your password in the next {user.passwordExpiryWarningDaysRemaining} days
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="btn-secondary" style={{ fontSize: 12 }} onClick={() => { setShowExpiryPopup(false); navigate('/', { replace: true }) }}>
+              <button className="btn-secondary" style={{ fontSize: 12 }} onClick={() => { setShowExpiryPopup(false); navigate(getPostLoginRedirect(user!, farms), { replace: true }) }}>
                 Remind me later
               </button>
               <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => navigate('/profile?changePassword=true', { replace: true })}>

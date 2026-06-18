@@ -2,6 +2,12 @@
 
 export type Role = 'SCOUT' | 'MANAGER' | 'FARM_ADMIN' | 'SUPER_ADMIN' | 'EDGE_SYNC'
 
+export interface FarmMembershipSummary {
+  farmId: string
+  slug: string
+  name: string
+}
+
 export interface UserDto {
   id: string
   farmId?: string
@@ -36,6 +42,7 @@ export interface LoginResponse {
   refreshToken: string
   expiresIn: number
   user: UserDto
+  farms: FarmMembershipSummary[]
 }
 
 // ─── Farm ────────────────────────────────────────────────────────────────────

@@ -1,18 +1,18 @@
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
+import IdleSessionManager from './IdleSessionManager'
 import { useAuthStore } from '@/hooks/useAuth'
 import { useSessionConnectionStore } from '@/hooks/useSessionConnection'
 
-const PAGE_TITLES: Record<string, string> = {
-  '/':          'Dashboard',
-  '/farms':     'Farms',
-  '/sessions':  'Sessions',
-  '/analytics': 'Analytics',
-  '/heatmap':   'Heat maps',
-  '/alerts':    'Alerts',
-  '/profile':   'Profile',
-  '/settings':  'Profile',
-  '/admin':     'Super Admin',
+const SEGMENT_TITLES: Record<string, string> = {
+  'dashboard': 'Dashboard',
+  'farms':     'Farms',
+  'sessions':  'Sessions',
+  'analytics': 'Analytics',
+  'heatmap':   'Heat maps',
+  'alerts':    'Alerts',
+  'profile':   'Profile',
+  'admin':     'Super Admin',
 }
 
 export default function AppLayout() {
@@ -20,17 +20,19 @@ export default function AppLayout() {
   const { user } = useAuthStore()
   const { status: sessionConnectionStatus, message: sessionConnectionMessage } = useSessionConnectionStore()
 
-  // Match /sessions/:id
-  const isSessionDetail = /^\/sessions\/.+/.test(location.pathname)
+  // Match /:farmSlug/sessions/:id or /sessions/:id
+  const isSessionDetail = /\/sessions\/.+/.test(location.pathname)
+  const lastSegment = location.pathname.split('/').filter(Boolean).pop() ?? ''
   const pageTitle = isSessionDetail
     ? 'Session detail'
-    : PAGE_TITLES[location.pathname] ?? ''
+    : SEGMENT_TITLES[lastSegment] ?? ''
 
   const initials = [user?.firstName?.[0], user?.lastName?.[0]]
     .filter(Boolean).join('').toUpperCase() || '?'
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#f9fafb' }}>
+      <IdleSessionManager />
       <Sidebar />
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { farmsApi, analyticsApi } from '@/services/api'
+import { useCurrentFarmStore } from '@/hooks/useCurrentFarm'
 import type {
   FarmResponse,
   HeatmapResponse,
@@ -55,6 +56,7 @@ function normalizeMonthlyHeatmapResponse(
 }
 
 export default function HeatmapPage() {
+  const { farmId: currentFarmId } = useCurrentFarmStore()
   const [farms, setFarms] = useState<FarmResponse[]>([])
   const [farmId, setFarmId] = useState('')
   const [heatmap, setHeatmap] = useState<MonthlyHeatmapResponse | null>(null)
@@ -70,9 +72,9 @@ export default function HeatmapPage() {
   useEffect(() => {
     farmsApi.list().then(data => {
       setFarms(data)
-      if (data.length > 0) setFarmId(data[0].id)
+      if (data.length > 0) setFarmId(currentFarmId ?? data[0].id)
     })
-  }, [])
+  }, [currentFarmId])
 
   useEffect(() => {
     if (!farmId) return

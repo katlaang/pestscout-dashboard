@@ -22,6 +22,7 @@ import {
   formatSessionWeekLabel,
 } from '@/utils'
 import { useAuthStore } from '@/hooks/useAuth'
+import { useCurrentFarmStore } from '@/hooks/useCurrentFarm'
 
 const ADMIN_ROLES = ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER']
 const CAN_CREATE_SESSION = new Set(ADMIN_ROLES)
@@ -85,6 +86,7 @@ function canManageSession(role: string, status: SessionStatus): boolean {
 }
 
 export default function SessionsPage() {
+  const { farmId: currentFarmId } = useCurrentFarmStore()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { user } = useAuthStore()
@@ -132,10 +134,10 @@ export default function SessionsPage() {
       }
 
       if (data.length > 0) {
-        setSelectedFarmId(isSuperAdmin ? ALL_FARMS_VALUE : data[0].id)
+        setSelectedFarmId(isSuperAdmin ? ALL_FARMS_VALUE : (currentFarmId ?? data[0].id))
       }
     })
-  }, [isScout, isSuperAdmin, searchParams, user?.farmId])
+  }, [isScout, isSuperAdmin, searchParams, user?.farmId, currentFarmId])
 
   useEffect(() => {
     if (!selectedFarmId) return
