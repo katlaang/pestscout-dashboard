@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { useEffect } from 'react'
 import { Toaster } from 'react-hot-toast'
 import AppLayout from '@/components/layout/AppLayout'
@@ -48,7 +48,7 @@ function NavigationBridge() {
 
 export default function App() {
   return (
-    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <HashRouter>
       <NavigationBridge />
       <Toaster
         position="top-right"
@@ -93,6 +93,6 @@ export default function App() {
         <Route path="/" element={<ProtectedRoute><RootRedirect /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/farms" replace />} />
       </Routes>
-    </BrowserRouter>
+    </HashRouter>
   )
 }
