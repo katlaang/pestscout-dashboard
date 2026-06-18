@@ -40,14 +40,18 @@ export const useAuthStore = create<AuthState>()(
 
       completeAuth: async (response) => {
         const expiresAt = storeAuthTokens(response)
+
+        let user: UserDto | null = response.user ?? null
+        if (!user) {
+          try {
+            user = await authApi.me()
+          } catch {
+            user = null
+          }
+        }
+
         set({
-          token: response.token,
-          refreshToken: response.refreshToken,
-          tokenExpiresAt: expiresAt,
-        })
-        const me = await authApi.me()
-        set({
-          user: me,
+          user,
           farms: response.farms ?? [],
           token: response.token,
           refreshToken: response.refreshToken,
