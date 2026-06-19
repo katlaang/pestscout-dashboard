@@ -92,8 +92,12 @@ export function useSessionBootstrap() {
   useEffect(() => {
     function handleStorage(event: StorageEvent) {
       if (event.key !== SHARED_REFRESH_OWNER_KEY) return
+      const previousOwner = event.oldValue
       const newOwner = event.newValue
-      if (newOwner && newOwner !== clientSessionId) {
+      // Only log out if WE were the previous owner and someone else took over.
+      // Without the oldValue check, a token refresh in any other tab fires this
+      // and logs us out even though our session was not replaced.
+      if (previousOwner === clientSessionId && newOwner && newOwner !== clientSessionId) {
         useAuthStore.getState().logout('session_replaced')
       }
     }
