@@ -6,7 +6,7 @@ const REASON_MESSAGES: Record<string, string> = {
   idle:            'Your session timed out due to inactivity.',
   session_expired: 'Your session timed out due to inactivity.',
   unauthorized:    'Your session timed out due to inactivity.',
-  session_replaced:'Your session was opened on another device. Please sign in again.',
+  session_replaced: 'You were logged out because you were logged in to another window.',
   session_invalid: 'Your session timed out. Please sign in again.',
 }
 

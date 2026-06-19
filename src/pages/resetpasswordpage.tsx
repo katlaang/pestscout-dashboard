@@ -9,7 +9,7 @@ export default function ResetPasswordPage() {
   const token = searchParams.get('token')
   const force = searchParams.get('force') === 'true'   // forced after login if passwordChangeRequired
 
-  const { user, logout } = useAuthStore()
+  const { user, token: authToken, tokenExpiresAt, logout } = useAuthStore()
 
   const [newPassword, setNewPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -46,8 +46,14 @@ export default function ResetPasswordPage() {
     setSaving(true)
     try {
       if (force && user) {
-        // Forced change after login — POST /api/auth/reset-password
-        await authApi.resetPassword({ token: token ?? '', newPassword })
+        // Forced change — requires a valid JWT (no reset token needed).
+        // If the session expired before the user submitted, send them back to login.
+        const sessionExpired = !authToken || (tokenExpiresAt != null && Date.now() >= tokenExpiresAt)
+        if (sessionExpired) {
+          logout('session_expired')
+          return
+        }
+        await authApi.resetPassword({ token: '', newPassword })
       } else if (token) {
         await authApi.resetPassword({ token, newPassword })
       }
@@ -57,7 +63,15 @@ export default function ResetPasswordPage() {
         logout()
       }, 2500)
     } catch (e: any) {
-      setError(e?.response?.data?.message ?? 'Password reset failed. The link may have expired.')
+      const status = e?.response?.status
+      const msg: string = e?.response?.data?.message ?? ''
+      // Auth failures in the force flow mean the session is gone — redirect to login
+      // instead of showing the internal backend error to the user.
+      if (force && (status === 401 || msg === 'Reset token is required')) {
+        logout('session_expired')
+        return
+      }
+      setError(msg || 'Password reset failed. The link may have expired.')
     } finally {
       setSaving(false)
     }

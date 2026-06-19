@@ -3,7 +3,7 @@ import { useAuthStore } from './useAuth'
 import { authApi, forceLogout, isForcedSessionErrorCode } from '@/services/api'
 import { sessionEventStream } from '@/services/sessionStream'
 import { getClientSessionId, hasClientSessionId } from '@/utils/clientSession'
-import { getSharedRefreshToken, getStoredRefreshToken } from '@/utils/authStorage'
+import { SHARED_REFRESH_OWNER_KEY, getSharedRefreshToken, getStoredRefreshToken } from '@/utils/authStorage'
 
 export function useSessionBootstrap() {
   const { token, completeAuth, refreshSession, updateUser } = useAuthStore()
@@ -85,6 +85,21 @@ export function useSessionBootstrap() {
       sessionEventStream.stop()
     }
   }, [clientSessionId, ready, token])
+
+  // Immediately log out when another tab claims the shared session.
+  // The storage event fires synchronously in all other tabs when storeAuthTokens
+  // writes a new owner ID, so this is faster than waiting for the SSE event.
+  useEffect(() => {
+    function handleStorage(event: StorageEvent) {
+      if (event.key !== SHARED_REFRESH_OWNER_KEY) return
+      const newOwner = event.newValue
+      if (newOwner && newOwner !== clientSessionId) {
+        useAuthStore.getState().logout('session_replaced')
+      }
+    }
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
+  }, [clientSessionId])
 
   return { ready }
 }

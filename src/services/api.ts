@@ -81,10 +81,23 @@ api.interceptors.request.use(config => {
 let isRefreshing = false
 let refreshQueue: Array<(token: string) => void> = []
 
+// Registered by useAuth.ts to clear in-memory Zustand state on force-logout.
+// Without this, Zustand still has user/token in memory after clearStoredAuth(),
+// causing LoginPage to redirect back to /reset-password?force=true with no JWT.
+let _storeLogout: ((reason?: string) => void) | null = null
+
+export function registerForceLogoutCallback(fn: (reason?: string) => void) {
+  _storeLogout = fn
+}
+
 export function forceLogout(reason = 'session_expired') {
   sessionEventStream.stop()
-  clearStoredAuth()
-  navigateToLogin(reason)
+  if (_storeLogout) {
+    _storeLogout(reason)
+  } else {
+    clearStoredAuth()
+    navigateToLogin(reason)
+  }
 }
 
 api.interceptors.response.use(

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import type { FarmMembershipSummary, LoginResponse, UserDto } from '@/types'
-import { authApi } from '@/services/api'
+import { authApi, registerForceLogoutCallback } from '@/services/api'
 import { AUTH_STORE_KEY, clearStoredAuth, getStoredRefreshToken, storeAuthTokens } from '@/utils/authStorage'
 import { navigateToLogin } from '@/utils/navigation'
 
@@ -78,7 +78,15 @@ export const useAuthStore = create<AuthState>()(
           const res = await authApi.login({ email, password })
           await get().completeAuth(res)
         } catch (err: any) {
-          const msg = err?.response?.data?.message ?? 'Invalid email or password'
+          const data = err?.response?.data
+          // Backend returns 400 when the account requires a forced password change,
+          // but still includes a restricted JWT in the response body so the client
+          // can call /api/auth/reset-password as an authenticated user (mode 2).
+          if (data?.token && data?.user?.passwordChangeRequired) {
+            await get().completeAuth(data as LoginResponse)
+            return
+          }
+          const msg = data?.message ?? 'Invalid email or password'
           set({ error: msg, isLoading: false })
         }
       },
@@ -106,3 +114,11 @@ export const useAuthStore = create<AuthState>()(
     }
   )
 )
+
+// Wire forceLogout (called from api.ts interceptors and SSE handler) through the
+// store's logout so the in-memory Zustand state is cleared alongside sessionStorage.
+// Without this, user/token survive in memory after clearStoredAuth(), causing
+// LoginPage to redirect back to /reset-password?force=true with no JWT attached.
+registerForceLogoutCallback((reason) => {
+  useAuthStore.getState().logout(reason)
+})

@@ -7,7 +7,7 @@ const ACCESS_TOKEN_KEY = 'access_token'
 const REFRESH_TOKEN_KEY = 'refresh_token'
 const TOKEN_EXPIRES_AT_KEY = 'token_expires_at'
 const SHARED_REFRESH_TOKEN_KEY = 'shared_refresh_token'
-const SHARED_REFRESH_OWNER_KEY = 'shared_refresh_owner'
+export const SHARED_REFRESH_OWNER_KEY = 'shared_refresh_owner'
 
 export function getStoredAccessToken(): string | null {
   return sessionStorage.getItem(ACCESS_TOKEN_KEY)
