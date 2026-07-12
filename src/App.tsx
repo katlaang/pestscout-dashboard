@@ -13,6 +13,7 @@ import SessionDetailPage from '@/pages/SessionDetailPage'
 import AnalyticsPage from '@/pages/AnalyticsPage'
 import HeatmapPage from '@/pages/HeatmapPage'
 import AlertsPage from '@/pages/AlertsPage'
+import AuthorityAlertsPage from '@/pages/AuthorityAlertsPage'
 import ProfilePage from '@/pages/ProfilePage'
 import SuperAdminPage from '@/pages/SuperAdminPage'
 import { useAuthStore, getPostLoginRedirect } from '@/hooks/useAuth'
@@ -78,6 +79,7 @@ export default function App() {
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/heatmap" element={<HeatmapPage />} />
           <Route path="/alerts" element={<AlertsPage />} />
+          <Route path="/authority-alerts" element={<AuthorityAlertsPage />} />
         </Route>
 
         {/* Farm-scoped routes — layout via FarmScopedLayout > AppLayout */}
@@ -88,6 +90,7 @@ export default function App() {
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="heatmap" element={<HeatmapPage />} />
           <Route path="alerts" element={<AlertsPage />} />
+          <Route path="authority-alerts" element={<AuthorityAlertsPage />} />
         </Route>
 
         <Route path="/" element={<ProtectedRoute><RootRedirect /></ProtectedRoute>} />

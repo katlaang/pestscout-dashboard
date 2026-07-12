@@ -1,6 +1,6 @@
 // ─── Auth ───────────────────────────────────────────────────────────────────
 
-export type Role = 'SCOUT' | 'MANAGER' | 'FARM_ADMIN' | 'SUPER_ADMIN' | 'EDGE_SYNC'
+export type Role = 'SCOUT' | 'MANAGER' | 'FARM_ADMIN' | 'SUPER_ADMIN' | 'REGIONAL_ANALYST' | 'EDGE_SYNC'
 
 export interface FarmMembershipSummary {
   farmId: string
@@ -18,6 +18,7 @@ export interface UserDto {
   country: string
   customerNumber: string
   role: Role
+  authorityAlertCurator?: boolean
   isEnabled: boolean
   active: boolean
   deleted: boolean
@@ -43,6 +44,52 @@ export interface LoginResponse {
   expiresIn: number
   user: UserDto
   farms: FarmMembershipSummary[]
+}
+
+// ─── Authority Alerts ──────────────────────────────────────────────────────
+
+export type AuthorityAlertType = 'NEW_DETECTION' | 'ADVISORY' | 'OUTBREAK' | 'QUARANTINE' | 'ERADICATION_COMPLETE' | 'OTHER'
+export type AuthorityAlertSeverity = 'ADVISORY' | 'WATCH' | 'WARNING' | 'EMERGENCY'
+
+export interface AuthorityAlertResponse {
+  id: string
+  alertType: AuthorityAlertType
+  severity: AuthorityAlertSeverity
+  issuingAuthority: string
+  title: string
+  messageBody: string
+  suggestedMitigation: string
+  country: string
+  state: string | null
+  linkedSpecies: SpeciesCode | null
+  sourceUrl: string | null
+  issuedDate: string
+  expiryDate: string | null
+  active: boolean
+  highlighted: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AlertCoverageDto {
+  name: string
+  activeAlertCount: number
+}
+
+export interface AuthorityAlertUpsertRequest {
+  alertType: AuthorityAlertType
+  severity: AuthorityAlertSeverity
+  issuingAuthority: string
+  title: string
+  messageBody: string
+  suggestedMitigation?: string
+  country: string
+  state?: string
+  linkedSpecies?: SpeciesCode
+  sourceUrl?: string
+  issuedDate: string
+  expiryDate?: string
+  active: boolean
 }
 
 // ─── Farm ────────────────────────────────────────────────────────────────────

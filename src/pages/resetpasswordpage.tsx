@@ -13,6 +13,8 @@ export default function ResetPasswordPage() {
 
   const [newPassword, setNewPassword] = useState('')
   const [confirm, setConfirm] = useState('')
+  const [showNewPassword, setShowNewPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [saving, setSaving] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -43,20 +45,28 @@ export default function ResetPasswordPage() {
     if (newPassword.length < 8) { setError('Password must be at least 8 characters'); return }
     if (newPassword !== confirm) { setError('Passwords do not match'); return }
 
+    const sessionExpired = !authToken || (tokenExpiresAt != null && Date.now() >= tokenExpiresAt)
+    if (force && !user) {
+      setError('Your session has expired. Please sign in again.')
+      logout('session_expired')
+      return
+    }
+    if (force && sessionExpired) {
+      setError('Your session has expired. Please sign in again.')
+      logout('session_expired')
+      return
+    }
+
     setSaving(true)
     try {
-      if (force && user) {
-        // Forced change — requires a valid JWT (no reset token needed).
-        // If the session expired before the user submitted, send them back to login.
-        const sessionExpired = !authToken || (tokenExpiresAt != null && Date.now() >= tokenExpiresAt)
-        if (sessionExpired) {
-          logout('session_expired')
-          return
-        }
+      if (force) {
         await authApi.resetPassword({ token: '', newPassword })
       } else if (token) {
         await authApi.resetPassword({ token, newPassword })
+      } else {
+        throw new Error('No reset token or authenticated session available.')
       }
+
       setDone(true)
       // Always log out and redirect to login — user must sign in again with new password
       setTimeout(() => {
@@ -65,9 +75,8 @@ export default function ResetPasswordPage() {
     } catch (e: any) {
       const status = e?.response?.status
       const msg: string = e?.response?.data?.message ?? ''
-      // Auth failures in the force flow mean the session is gone — redirect to login
-      // instead of showing the internal backend error to the user.
       if (force && (status === 401 || msg === 'Reset token is required')) {
+        setError('Your session is not authenticated for forced password change. Please sign in again.')
         logout('session_expired')
         return
       }
@@ -110,21 +119,73 @@ export default function ResetPasswordPage() {
         </div>
       ) : (
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div>
+          <div style={{ position: 'relative' }}>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#374151', marginBottom: 5 }}>
               New password
             </label>
-            <input className="input" type="password" placeholder="At least 8 characters"
-              value={newPassword} onChange={e => setNewPassword(e.target.value)} onPaste={event => event.preventDefault()}
-              required autoComplete="new-password" />
+            <input
+              className="input"
+              type={showNewPassword ? 'text' : 'password'}
+              placeholder="At least 8 characters"
+              value={newPassword}
+              onChange={e => setNewPassword(e.target.value)}
+              onPaste={event => event.preventDefault()}
+              required
+              autoComplete="new-password"
+              style={{ paddingRight: 92 }}
+            />
+            <button
+              type="button"
+              onClick={() => setShowNewPassword(prev => !prev)}
+              style={{
+                position: 'absolute',
+                right: 8,
+                top: 32,
+                height: 32,
+                border: 'none',
+                background: 'transparent',
+                color: '#2563eb',
+                fontSize: 12,
+                cursor: 'pointer',
+                padding: '0 8px',
+              }}
+            >
+              {showNewPassword ? 'Hide' : 'Show'}
+            </button>
           </div>
-          <div>
+          <div style={{ position: 'relative' }}>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#374151', marginBottom: 5 }}>
               Confirm password
             </label>
-            <input className="input" type="password" placeholder="Repeat new password"
-              value={confirm} onChange={e => setConfirm(e.target.value)} onPaste={event => event.preventDefault()}
-              required autoComplete="new-password" />
+            <input
+              className="input"
+              type={showConfirmPassword ? 'text' : 'password'}
+              placeholder="Repeat new password"
+              value={confirm}
+              onChange={e => setConfirm(e.target.value)}
+              onPaste={event => event.preventDefault()}
+              required
+              autoComplete="new-password"
+              style={{ paddingRight: 92 }}
+            />
+            <button
+              type="button"
+              onClick={() => setShowConfirmPassword(prev => !prev)}
+              style={{
+                position: 'absolute',
+                right: 8,
+                top: 32,
+                height: 32,
+                border: 'none',
+                background: 'transparent',
+                color: '#2563eb',
+                fontSize: 12,
+                cursor: 'pointer',
+                padding: '0 8px',
+              }}
+            >
+              {showConfirmPassword ? 'Hide' : 'Show'}
+            </button>
           </div>
 
           {error && (

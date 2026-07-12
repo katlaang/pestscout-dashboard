@@ -18,6 +18,7 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [showExpiryPopup, setShowExpiryPopup] = useState(false)
 
   // If already authenticated, redirect — but check password flags first
@@ -111,10 +112,37 @@ export default function LoginPage() {
               <input className="input" type="email" placeholder="you@example.com"
                 value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" />
             </div>
-            <div>
+            <div style={{ position: 'relative' }}>
               <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#374151', marginBottom: 5 }}>Password</label>
-              <input className="input" type="password" placeholder="••••••••"
-                value={password} onChange={e => setPassword(e.target.value)} onPaste={event => event.preventDefault()} required autoComplete="current-password" />
+              <input
+                className="input"
+                type={showPassword ? 'text' : 'password'}
+                placeholder="••••••••"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                onPaste={event => event.preventDefault()}
+                required
+                autoComplete="current-password"
+                style={{ paddingRight: 92 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(prev => !prev)}
+                style={{
+                  position: 'absolute',
+                  right: 8,
+                  top: 32,
+                  height: 32,
+                  border: 'none',
+                  background: 'transparent',
+                  color: '#2563eb',
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  padding: '0 8px',
+                }}
+              >
+                {showPassword ? 'Hide' : 'Show'}
+              </button>
             </div>
             <button className="btn-primary" type="submit" disabled={isLoading} style={{ marginTop: 4, padding: '11px', fontSize: 13 }}>
               {isLoading ? 'Signing in…' : 'Sign in'}

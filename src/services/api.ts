@@ -19,6 +19,9 @@ import type {
   CreateUserRequest, UpdateUserRequest, UserSearchParams, PagedResponse,
   UpdateFarmLicenseRequest, UpdateFarmRequest, CreateFarmRequest,
   FarmLayoutPreviewPolygon,
+  AuthorityAlertResponse,
+  AuthorityAlertUpsertRequest,
+  AlertCoverageDto,
   FarmLayoutPreviewRequest,
   FarmLayoutPreviewResponse,
   CreateGreenhouseRequest, UpdateGreenhouseRequest, GreenhouseResponse,
@@ -168,8 +171,11 @@ export const authApi = {
   claimSession: (refreshToken: string) =>
     api.post<LoginResponse>('/api/auth/session/claim', { refreshToken }).then(r => r.data),
 
-  resetPassword: (body: ResetPasswordRequest) =>
-    api.post('/api/auth/reset-password', body).then(r => r.data),
+  resetPassword: (body: ResetPasswordRequest) => {
+    const token = getStoredAccessToken()
+    const config = token && !body.token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
+    return api.post('/api/auth/reset-password', body, config).then(r => r.data)
+  },
 
   changePassword: (body: ChangePasswordRequest) =>
     api.post('/api/auth/change-password', body).then(r => r.data),
@@ -189,6 +195,34 @@ export const farmsApi = {
 
   getBySlug: (slug: string) =>
     api.get<FarmResponse>(`/api/farms/by-slug/${slug}`).then(r => r.data),
+}
+
+// ─── Authority Alerts ──────────────────────────────────────────────────────
+
+export const authorityAlertsApi = {
+  list: () =>
+    api.get<AuthorityAlertResponse[]>('/api/authority-alerts').then(r => r.data),
+
+  listByRegion: ({ country, states }: { country: string; states: string[] }) => {
+    const params = new URLSearchParams({ country })
+    states.forEach(state => params.append('state', state))
+    return api.get<AuthorityAlertResponse[]>(`/api/authority-alerts/regions?${params}`).then(r => r.data)
+  },
+
+  emergency: () =>
+    api.get<AuthorityAlertResponse[]>('/api/authority-alerts/emergency').then(r => r.data),
+
+  countryCoverage: () =>
+    api.get<AlertCoverageDto[]>('/api/authority-alerts/map/countries').then(r => r.data),
+
+  stateCoverage: (country: string) =>
+    api.get<AlertCoverageDto[]>(`/api/authority-alerts/map/countries/${encodeURIComponent(country)}/states`).then(r => r.data),
+
+  create: (body: AuthorityAlertUpsertRequest) =>
+    api.post<AuthorityAlertResponse>('/api/authority-alerts', body).then(r => r.data),
+
+  update: (alertId: string, body: AuthorityAlertUpsertRequest) =>
+    api.put<AuthorityAlertResponse>(`/api/authority-alerts/${alertId}`, body).then(r => r.data),
 }
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────

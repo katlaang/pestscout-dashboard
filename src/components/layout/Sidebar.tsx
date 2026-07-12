@@ -21,7 +21,8 @@ export default function Sidebar() {
     { to: `${fp}/analytics`,  label: 'Analytics', icon: ChartIcon,  roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
     { to: `${fp}/heatmap`,    label: 'Heat maps', icon: GridIcon,   roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
     { to: `${fp}/alerts`,     label: 'Alerts',    icon: BellIcon,   roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER'] },
-    { to: '/profile',          label: 'Profile',   icon: PersonIcon, roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER', 'SCOUT'] },
+    { to: '/authority-alerts', label: 'Authority alerts', icon: BellIcon, roles: ['SUPER_ADMIN', 'REGIONAL_ANALYST'] },
+    { to: '/profile',          label: 'Profile',   icon: PersonIcon, roles: ['SUPER_ADMIN', 'FARM_ADMIN', 'MANAGER', 'SCOUT', 'REGIONAL_ANALYST'] },
   ].filter(item => item.roles.includes(role))
 
   const SUPER_ADMIN_NAV = [
